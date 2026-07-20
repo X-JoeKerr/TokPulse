@@ -4,3 +4,5 @@ DerivedData/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 
+# Local agent working notes
+docs/progress/
