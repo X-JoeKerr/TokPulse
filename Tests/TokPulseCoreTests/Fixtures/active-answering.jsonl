@@ -1,0 +1,4 @@
+{"timestamp":"2026-07-20T11:00:00.000Z","type":"session_meta","payload":{"session_id":"019f7f57-ee00-7000-8000-000000000001","id":"019f7f57-ee00-7000-8000-000000000001","timestamp":"2026-07-20T10:59:59.000Z","cwd":"/tmp/project","source":"cli","thread_source":"user"}}
+{"timestamp":"2026-07-20T11:00:00.010Z","type":"event_msg","payload":{"type":"task_started","turn_id":"019f7f57-f000-7000-8000-000000000002","started_at":1784545200}}
+{"timestamp":"2026-07-20T11:00:00.020Z","type":"turn_context","payload":{"turn_id":"019f7f57-f000-7000-8000-000000000002","model":"gpt-test"}}
+{"timestamp":"2026-07-20T11:00:02.000Z","type":"response_item","payload":{"type":"reasoning","id":"reasoning-1"}}
