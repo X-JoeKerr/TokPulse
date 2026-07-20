@@ -18,7 +18,7 @@ TokPulse measures **model-effective output TPS**, not pure decode TPS:
 - Tool execution, approval/user waits, idle time, and time between prompts are excluded when the event pairs are complete.
 - A response is committed only after its token usage arrives. Its full output-token count is divided by its full inferred model-active duration.
 - For each Agent, only the latest completed sample whose end time is within the last 60 seconds qualifies. The value stays unchanged until a newer sample arrives or the 60-second TTL expires; it is not prorated at the cutoff.
-- Agents from recently touched session files remain visible with `—` after their sample expires, but they do not dilute `Avg` or contribute zero to `Σ`.
+- A Subagent disappears when its sample expires. A stale Main/Root Agent can remain as `—` while its session file is still within the three-minute inventory, but it does not participate in `Avg` or `Σ`.
 - This is a last-observed segment rate, not the exact number of tokens arriving during the current second. Codex local logs do not expose per-token timestamps.
 
 ## Privacy

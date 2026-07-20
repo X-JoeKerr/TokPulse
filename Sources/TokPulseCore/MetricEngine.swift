@@ -39,8 +39,9 @@ public struct MetricEngine: Sendable {
             latestSamples[sample.agentID] = sample
         }
 
-        let agentMetrics = descriptorsByID.map { agentID, descriptor -> AgentMetrics in
+        let agentMetrics = descriptorsByID.compactMap { agentID, descriptor -> AgentMetrics? in
             guard let sample = latestSamples[agentID] else {
+                guard descriptor.kind == .root else { return nil }
                 return AgentMetrics(
                     id: agentID,
                     descriptor: descriptor,

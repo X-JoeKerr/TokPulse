@@ -48,12 +48,46 @@ func scannerReportsAnOpenModelTurnAsAnswering() {
     #expect(result.answeringAgentIDs == [agentID])
 }
 
+@Test
+func scannerDefaultInventoryExpiresFilesAfterThreeMinutes() throws {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("TokPulseScannerTests-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let scanNow = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
+    let recent = directory.appendingPathComponent("recent.jsonl")
+    let stale = directory.appendingPathComponent("stale.jsonl")
+    try fileManager.copyItem(at: fixtureURL("active-answering.jsonl"), to: recent)
+    try fileManager.copyItem(at: fixtureURL("copied-parent-child.jsonl"), to: stale)
+    try fileManager.setAttributes(
+        [.modificationDate: scanNow.addingTimeInterval(-180)],
+        ofItemAtPath: recent.path)
+    try fileManager.setAttributes(
+        [.modificationDate: scanNow.addingTimeInterval(-181)],
+        ofItemAtPath: stale.path)
+
+    #expect(CodexSessionScanner.defaultFileRecencyLimit == 3 * 60)
+    let recentResult = CodexSessionScanner(roots: [directory]).scan(at: scanNow)
+    #expect(recentResult.agents.map(\.id) == ["019f7f57-ee00-7000-8000-000000000001"])
+
+    try fileManager.setAttributes(
+        [.modificationDate: scanNow.addingTimeInterval(-181)],
+        ofItemAtPath: recent.path)
+    let expiredResult = CodexSessionScanner(roots: [directory]).scan(at: scanNow)
+    #expect(expiredResult.agents.isEmpty)
+}
+
 private func scanFixture(_ name: String) -> CodexSessionScanResult {
-    let url = URL(fileURLWithPath: #filePath)
+    CodexSessionScanner(roots: [fixtureURL(name)], fileRecencyLimit: nil).scan()
+}
+
+private func fixtureURL(_ name: String) -> URL {
+    URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .appendingPathComponent("Fixtures", isDirectory: true)
         .appendingPathComponent(name)
-    return CodexSessionScanner(roots: [url], fileRecencyLimit: nil).scan()
 }
 
 private func date(_ value: String) -> Date {

@@ -23,7 +23,7 @@ func usesLatestCompletedSampleWithinOneMinute() {
 }
 
 @Test
-func keepsAgentUnavailableWhenItHasNoSampleWithinOneMinute() {
+func keepsRootAgentUnavailableWhenItHasNoSampleWithinOneMinute() {
     let agent = rootAgent("root")
     let metrics = MetricEngine().calculate(
         at: now,
@@ -41,8 +41,15 @@ func keepsAgentUnavailableWhenItHasNoSampleWithinOneMinute() {
 }
 
 @Test
-func includesSampleEndingExactlyOneMinuteAgo() {
-    let agent = rootAgent("root")
+func includesSubagentSampleEndingExactlyOneMinuteAgo() {
+    let agent = AgentDescriptor(
+        id: "child",
+        sessionID: "session",
+        parentAgentID: "root",
+        kind: .subagent,
+        name: "explorer",
+        startedAt: now.addingTimeInterval(-100)
+    )
     let metrics = MetricEngine().calculate(
         at: now,
         agents: [agent],
@@ -96,7 +103,34 @@ func includesSubagentsInSessionAndGlobalMetrics() {
 }
 
 @Test
-func unavailableAgentDoesNotDiluteAverageOrContributeToTotal() {
+func keepsUnavailableRootAlongsideFreshSubagent() {
+    let root = rootAgent("root")
+    let child = AgentDescriptor(
+        id: "child",
+        sessionID: root.sessionID,
+        parentAgentID: root.id,
+        kind: .subagent,
+        name: "explorer",
+        startedAt: now.addingTimeInterval(-100)
+    )
+    let metrics = MetricEngine().calculate(
+        at: now,
+        agents: [root, child],
+        samples: [sample("child-sample", agent: child.id, start: -20, duration: 2, tokens: 40)]
+    )
+
+    #expect(metrics.sessions[0].agents.map(\.id) == [root.id, child.id])
+    #expect(metrics.sessions[0].agents[0].hasFreshSample == false)
+    #expect(metrics.sessions[0].agents[1].hasFreshSample)
+    #expect(metrics.activeAgentCount == 1)
+    #expect(metrics.averageTPS == 20)
+    #expect(metrics.totalTPS == 20)
+    #expect(metrics.sessions[0].averageTPS == 20)
+    #expect(metrics.sessions[0].totalTPS == 20)
+}
+
+@Test
+func removesUnavailableSubagentWithoutChangingAggregates() {
     let root = rootAgent("root")
     let child = AgentDescriptor(
         id: "child",
@@ -114,12 +148,31 @@ func unavailableAgentDoesNotDiluteAverageOrContributeToTotal() {
 
     #expect(metrics.activeAgentCount == 1)
     #expect(metrics.sessions[0].activeAgentCount == 1)
-    #expect(metrics.sessions[0].agents.count == 2)
-    #expect(metrics.sessions[0].agents.first(where: { $0.id == child.id })?.hasFreshSample == false)
+    #expect(metrics.sessions[0].agents.map(\.id) == [root.id])
     #expect(metrics.averageTPS == 10)
     #expect(metrics.totalTPS == 10)
     #expect(metrics.sessions[0].averageTPS == 10)
     #expect(metrics.sessions[0].totalTPS == 10)
+}
+
+@Test
+func removesSessionWhenItsOnlySubagentHasNoFreshSample() {
+    let child = AgentDescriptor(
+        id: "child",
+        sessionID: "session",
+        parentAgentID: "root",
+        kind: .subagent,
+        name: "explorer",
+        startedAt: now.addingTimeInterval(-100)
+    )
+    let metrics = MetricEngine().calculate(
+        at: now,
+        agents: [child],
+        samples: [sample("old-child", agent: child.id, start: -71, duration: 10, tokens: 100)]
+    )
+
+    #expect(metrics.activeAgentCount == 0)
+    #expect(metrics.sessions.isEmpty)
 }
 
 @Test
