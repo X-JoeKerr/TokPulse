@@ -41,13 +41,13 @@ struct DashboardView: View {
             Text("TokPulse")
                 .font(.headline)
             Spacer()
-            Text("\(self.metrics.activeAgentCount) agents")
+            Text("\(self.metrics.activeAgentCount) live")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(.quaternary, in: Capsule())
-                .accessibilityLabel("\(self.metrics.activeAgentCount) measured agents")
+                .accessibilityLabel("\(self.metrics.activeAgentCount) agents with a fresh sample")
         }
     }
 
@@ -69,12 +69,15 @@ struct DashboardView: View {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("\(MetricFormatting.window(self.metrics.windowSeconds)) window")
+                Text("\(MetricFormatting.window(self.metrics.windowSeconds)) freshness")
                 Text("·")
                     .accessibilityHidden(true)
-                Text("answering time only")
+                Text("latest completed call")
                 Spacer(minLength: 8)
-                Text(MetricFormatting.tokenCount(self.metrics.outputTokens) + " tokens")
+                Text(
+                    (self.metrics.activeAgentCount > 0
+                        ? MetricFormatting.tokenCount(self.metrics.outputTokens)
+                        : "—") + " latest tokens")
                     .monospacedDigit()
             }
             .font(.caption)
@@ -104,11 +107,11 @@ struct DashboardView: View {
             }
 
             if self.metrics.sessions.isEmpty {
-                Label("No responses in this window", systemImage: "pause.circle")
+                Label("No Agent sample in the last minute", systemImage: "pause.circle")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 72)
-                    .accessibilityLabel("No agent responses in the current window")
+                    .accessibilityLabel("No Agent has a completed sample from the last minute")
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -151,8 +154,8 @@ struct DashboardView: View {
 
     private var provenanceText: String {
         self.metrics.isEstimated
-            ? "Mixed provenance · estimates included"
-            : "Reported tokens · observed timing"
+            ? "Latest call · inferred timing included"
+            : "Latest call · reported tokens and observed timing"
     }
 
     private func expansionBinding(for id: String) -> Binding<Bool> {
@@ -224,16 +227,19 @@ private struct SessionCardView: View {
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                     Text(
-                        "Avg \(MetricFormatting.tps(self.session.averageTPS)) · "
-                            + "Σ \(MetricFormatting.tps(self.session.totalTPS)) t/s")
+                        "Avg \(MetricFormatting.tps(self.session.averageTPS, available: self.hasFreshSample)) · "
+                            + "Σ \(MetricFormatting.tps(self.session.totalTPS, available: self.hasFreshSample)) t/s")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(self.session.agents.count) agents")
-                    Text(MetricFormatting.tokenCount(self.session.outputTokens) + " tok")
+                    Text("\(self.session.activeAgentCount)/\(self.session.agents.count) live")
+                    Text(
+                        (self.hasFreshSample
+                            ? MetricFormatting.tokenCount(self.session.outputTokens)
+                            : "—") + " tok")
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -243,9 +249,9 @@ private struct SessionCardView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Session \(self.title)")
             .accessibilityValue(
-                "Average \(MetricFormatting.tps(self.session.averageTPS)), combined "
-                    + "\(MetricFormatting.tps(self.session.totalTPS)) tokens per second, "
-                    + "\(self.session.agents.count) agents")
+                "Average \(MetricFormatting.tps(self.session.averageTPS, available: self.hasFreshSample)), combined "
+                    + "\(MetricFormatting.tps(self.session.totalTPS, available: self.hasFreshSample)) tokens per second, "
+                    + "\(self.session.activeAgentCount) of \(self.session.agents.count) agents live")
         }
         .padding(11)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
@@ -253,6 +259,10 @@ private struct SessionCardView: View {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .stroke(Color(nsColor: .separatorColor).opacity(0.65), lineWidth: 0.5)
         }
+    }
+
+    private var hasFreshSample: Bool {
+        self.session.activeAgentCount > 0
     }
 
     private var title: String {
@@ -304,18 +314,17 @@ private struct AgentMetricRow: View {
 
             VStack(alignment: .trailing, spacing: 3) {
                 HStack(spacing: 4) {
-                    if self.agent.isEstimated {
+                    if self.agent.hasFreshSample && self.agent.isEstimated {
                         Text("EST")
                             .font(.system(size: 8, weight: .semibold))
                             .foregroundStyle(.orange)
                     }
-                    Text("\(MetricFormatting.tps(self.agent.averageTPS)) t/s avg")
+                    Text(
+                        "\(MetricFormatting.tps(self.agent.averageTPS, available: self.agent.hasFreshSample)) t/s last")
                         .font(.caption.weight(.semibold))
                         .monospacedDigit()
                 }
-                Text(
-                    "\(MetricFormatting.tokenCount(self.agent.outputTokens)) tok · "
-                        + "\(MetricFormatting.activeTime(self.agent.activeSeconds)) active")
+                Text(self.sampleDetail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -330,11 +339,18 @@ private struct AgentMetricRow: View {
         self.agent.descriptor.kind == .root ? "ROOT" : "SUBAGENT"
     }
 
+    private var sampleDetail: String {
+        guard self.agent.hasFreshSample else { return "No sample in last minute" }
+        return "\(MetricFormatting.tokenCount(self.agent.outputTokens)) tok · "
+            + "\(MetricFormatting.activeTime(self.agent.activeSeconds)) call"
+    }
+
     private var accessibilityValue: String {
+        guard self.agent.hasFreshSample else { return "No completed sample in the last minute" }
         let model = self.agent.descriptor.model ?? "unavailable"
         let estimate = self.agent.isEstimated ? ", estimated" : ""
-        return "Average \(MetricFormatting.tps(self.agent.averageTPS)) tokens per second, "
+        return "Latest rate \(MetricFormatting.tps(self.agent.averageTPS)) tokens per second, "
             + "\(MetricFormatting.tokenCount(self.agent.outputTokens)) tokens, "
-            + "\(MetricFormatting.activeTime(self.agent.activeSeconds)) active, model \(model)\(estimate)"
+            + "\(MetricFormatting.activeTime(self.agent.activeSeconds)) call duration, model \(model)\(estimate)"
     }
 }

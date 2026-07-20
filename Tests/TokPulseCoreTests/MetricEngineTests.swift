@@ -5,46 +5,68 @@ import Testing
 private let now = Date(timeIntervalSince1970: 10_000)
 
 @Test
-func excludesIdleTimeBetweenModelResponses() {
+func usesLatestCompletedSampleWithinOneMinute() {
     let agent = rootAgent("root")
     let samples = [
-        sample("a", agent: agent.id, start: -550, duration: 2, tokens: 20),
-        sample("b", agent: agent.id, start: -10, duration: 2, tokens: 30),
+        sample("older", agent: agent.id, start: -50, duration: 10, tokens: 200),
+        sample("latest", agent: agent.id, start: -35, duration: 30, tokens: 1_000),
     ]
 
     let metrics = MetricEngine().calculate(at: now, agents: [agent], samples: samples)
 
-    #expect(metrics.sessions[0].agents[0].activeSeconds == 4)
-    #expect(metrics.sessions[0].agents[0].averageTPS == 12.5)
+    let agentMetrics = metrics.sessions[0].agents[0]
+    #expect(metrics.windowSeconds == 60)
+    #expect(agentMetrics.outputTokens == 1_000)
+    #expect(agentMetrics.activeSeconds == 30)
+    #expect(agentMetrics.averageTPS == 1_000.0 / 30.0)
+    #expect(agentMetrics.sampleCount == 1)
 }
 
 @Test
-func excludesSamplesOutsideTenMinuteWindow() {
+func keepsAgentUnavailableWhenItHasNoSampleWithinOneMinute() {
     let agent = rootAgent("root")
     let metrics = MetricEngine().calculate(
         at: now,
         agents: [agent],
-        samples: [sample("old", agent: agent.id, start: -700, duration: 10, tokens: 100)]
+        samples: [sample("old", agent: agent.id, start: -71, duration: 10, tokens: 100)]
     )
 
     #expect(metrics.activeAgentCount == 0)
-    #expect(metrics.sessions.isEmpty)
+    #expect(metrics.sessions.count == 1)
+    #expect(metrics.sessions[0].agents.count == 1)
+    #expect(!metrics.sessions[0].agents[0].hasFreshSample)
+    #expect(metrics.sessions[0].agents[0].sampleCount == 0)
+    #expect(metrics.averageTPS == 0)
+    #expect(metrics.totalTPS == 0)
 }
 
 @Test
-func proratesSampleThatCrossesWindowBoundary() {
+func includesSampleEndingExactlyOneMinuteAgo() {
     let agent = rootAgent("root")
     let metrics = MetricEngine().calculate(
         at: now,
         agents: [agent],
-        samples: [sample("crossing", agent: agent.id, start: -610, duration: 20, tokens: 200)]
+        samples: [sample("boundary", agent: agent.id, start: -70, duration: 10, tokens: 100)]
+    )
+
+    #expect(metrics.activeAgentCount == 1)
+    #expect(metrics.sessions[0].agents[0].averageTPS == 10)
+}
+
+@Test
+func doesNotProrateSampleThatStartsBeforeOneMinuteBoundary() {
+    let agent = rootAgent("root")
+    let metrics = MetricEngine().calculate(
+        at: now,
+        agents: [agent],
+        samples: [sample("crossing", agent: agent.id, start: -90, duration: 40, tokens: 200)]
     )
 
     let agentMetrics = metrics.sessions[0].agents[0]
-    #expect(agentMetrics.outputTokens == 100)
-    #expect(agentMetrics.activeSeconds == 10)
-    #expect(agentMetrics.averageTPS == 10)
-    #expect(agentMetrics.isEstimated)
+    #expect(agentMetrics.outputTokens == 200)
+    #expect(agentMetrics.activeSeconds == 40)
+    #expect(agentMetrics.averageTPS == 5)
+    #expect(!agentMetrics.isEstimated)
 }
 
 @Test
@@ -74,6 +96,33 @@ func includesSubagentsInSessionAndGlobalMetrics() {
 }
 
 @Test
+func unavailableAgentDoesNotDiluteAverageOrContributeToTotal() {
+    let root = rootAgent("root")
+    let child = AgentDescriptor(
+        id: "child",
+        sessionID: root.sessionID,
+        parentAgentID: root.id,
+        kind: .subagent,
+        name: "explorer",
+        startedAt: now.addingTimeInterval(-100)
+    )
+    let metrics = MetricEngine().calculate(
+        at: now,
+        agents: [root, child],
+        samples: [sample("root-sample", agent: root.id, start: -20, duration: 2, tokens: 20)]
+    )
+
+    #expect(metrics.activeAgentCount == 1)
+    #expect(metrics.sessions[0].activeAgentCount == 1)
+    #expect(metrics.sessions[0].agents.count == 2)
+    #expect(metrics.sessions[0].agents.first(where: { $0.id == child.id })?.hasFreshSample == false)
+    #expect(metrics.averageTPS == 10)
+    #expect(metrics.totalTPS == 10)
+    #expect(metrics.sessions[0].averageTPS == 10)
+    #expect(metrics.sessions[0].totalTPS == 10)
+}
+
+@Test
 func groupsIndependentRootSessions() {
     let first = rootAgent("first")
     let second = AgentDescriptor(
@@ -95,10 +144,11 @@ func groupsIndependentRootSessions() {
     #expect(metrics.sessions.count == 2)
     #expect(metrics.averageTPS == 10)
     #expect(metrics.totalTPS == 20)
+    #expect(metrics.sessions.reduce(0) { $0 + $1.totalTPS } == metrics.totalTPS)
 }
 
 @Test
-func averageIsActivityWeightedAndTotalUsesWallClockUnion() {
+func averageIsArithmeticMeanAndTotalIsSumOfLatestAgentRates() {
     let slow = rootAgent("slow")
     let fast = AgentDescriptor(
         id: "fast",
@@ -116,23 +166,26 @@ func averageIsActivityWeightedAndTotalUsesWallClockUnion() {
         ]
     )
 
-    #expect(abs(metrics.averageTPS - (200.0 / 11.0)) < 0.000_001)
-    #expect(metrics.totalTPS == 20)
+    #expect(metrics.averageTPS == 55)
+    #expect(metrics.totalTPS == 110)
 }
 
 @Test
-func ignoresInvalidAndUnknownSamples() {
+func ignoresInvalidUnknownAndFutureSamples() {
     let agent = rootAgent("root")
     let metrics = MetricEngine().calculate(
         at: now,
         agents: [agent],
         samples: [
             sample("zero", agent: agent.id, start: -10, duration: 0, tokens: 100),
+            sample("negative", agent: agent.id, start: -10, duration: 1, tokens: -1),
+            sample("future", agent: agent.id, start: 1, duration: 1, tokens: 100),
             sample("unknown", agent: "missing", start: -10, duration: 1, tokens: 100),
         ]
     )
 
     #expect(metrics.activeAgentCount == 0)
+    #expect(metrics.sessions[0].agents[0].hasFreshSample == false)
 }
 
 private func rootAgent(_ id: String) -> AgentDescriptor {

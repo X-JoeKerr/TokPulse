@@ -60,6 +60,8 @@ public struct CodexSessionScanResult: Hashable, Sendable {
 /// and size. It intentionally does not watch the filesystem; callers can rescan on
 /// a modest timer and unchanged files are cheap.
 public final class CodexSessionScanner: @unchecked Sendable {
+    public static let defaultFileRecencyLimit: TimeInterval = 15 * 60
+
     public static var defaultRoots: [URL] {
         let codexHome = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex", isDirectory: true)
@@ -78,11 +80,12 @@ public final class CodexSessionScanner: @unchecked Sendable {
     /// - Parameters:
     ///   - roots: JSONL files or directories containing Codex rollout files.
     ///   - fileRecencyLimit: Ignore files whose mtime is older than this many
-    ///     seconds. The default includes a five-minute margin beyond the metric
-    ///     window. Pass `nil` for a full historical scan.
+    ///     seconds. The default preserves the original fifteen-minute session
+    ///     inventory even though live rate samples expire sooner. Pass `nil` for
+    ///     a full historical scan.
     public init(
         roots: [URL] = CodexSessionScanner.defaultRoots,
-        fileRecencyLimit: TimeInterval? = MetricEngine.defaultWindow + (5 * 60)
+        fileRecencyLimit: TimeInterval? = CodexSessionScanner.defaultFileRecencyLimit
     ) {
         self.roots = roots
         self.fileRecencyLimit = fileRecencyLimit

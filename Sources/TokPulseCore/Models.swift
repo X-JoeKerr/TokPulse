@@ -86,6 +86,10 @@ public struct AgentMetrics: Identifiable, Hashable, Sendable {
     public let averageTPS: Double
     public let sampleCount: Int
     public let isEstimated: Bool
+
+    public var hasFreshSample: Bool {
+        sampleCount > 0
+    }
 }
 
 public struct SessionMetrics: Identifiable, Hashable, Sendable {
@@ -96,6 +100,10 @@ public struct SessionMetrics: Identifiable, Hashable, Sendable {
     public let outputTokens: Double
     public let activeSeconds: TimeInterval
     public let isEstimated: Bool
+
+    public var activeAgentCount: Int {
+        agents.lazy.filter(\.hasFreshSample).count
+    }
 }
 
 public struct DashboardMetrics: Hashable, Sendable {
@@ -123,4 +131,3 @@ public struct DashboardMetrics: Hashable, Sendable {
         )
     }
 }
-

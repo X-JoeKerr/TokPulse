@@ -1,13 +1,13 @@
 # TokPulse
 
-TokPulse is a native macOS menu bar monitor for effective Codex output throughput. It reads local Codex rollout JSONL, groups root agents and subagents into sessions, and reports activity from the most recent ten minutes.
+TokPulse is a native macOS menu bar monitor for effective Codex output throughput. It reads local Codex rollout JSONL and groups root agents and subagents into sessions. Each Agent contributes its latest completed model-call rate while that sample is at most 60 seconds old.
 
 The menu bar shows:
 
-- `Avg`: generated output tokens divided by summed per-agent model-active seconds.
-- `Σ`: generated output tokens divided by the wall-clock union of all model-active intervals, preserving concurrent subagent throughput.
+- `Avg`: the arithmetic mean of all currently available Agent rates.
+- `Σ`: the arithmetic sum of those same Agent rates.
 
-The popover expands each root session into its root agent and subagents, with average TPS, output tokens, inferred active time, and model metadata.
+The popover expands each root session into its root agent and subagents, with each Agent's last rate, latest output-token count, inferred model-call duration, and model metadata. Session and global `Σ` values are additive, so the visible Agent values add up to the menu-bar total before display rounding.
 
 ## Metric boundary
 
@@ -16,8 +16,10 @@ TokPulse measures **model-effective output TPS**, not pure decode TPS:
 - Counts come from `last_token_usage.output_tokens`, including reasoning, visible output, tool-call arguments, and other generated structure.
 - Model-active timing is inferred from input-ready, model output, tool-call, tool-output, and turn lifecycle timestamps.
 - Tool execution, approval/user waits, idle time, and time between prompts are excluded when the event pairs are complete.
-- A response is committed only after its token usage arrives. An in-progress response does not enter the denominator as zero-token time.
-- A segment crossing the ten-minute boundary is prorated and marked estimated because Codex does not expose per-token timestamps in local rollout logs.
+- A response is committed only after its token usage arrives. Its full output-token count is divided by its full inferred model-active duration.
+- For each Agent, only the latest completed sample whose end time is within the last 60 seconds qualifies. The value stays unchanged until a newer sample arrives or the 60-second TTL expires; it is not prorated at the cutoff.
+- Agents from recently touched session files remain visible with `—` after their sample expires, but they do not dilute `Avg` or contribute zero to `Σ`.
+- This is a last-observed segment rate, not the exact number of tokens arriving during the current second. Codex local logs do not expose per-token timestamps.
 
 ## Privacy
 

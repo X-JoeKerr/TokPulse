@@ -1,7 +1,7 @@
 import Foundation
 
 public struct MetricEngine: Sendable {
-    public static let defaultWindow: TimeInterval = 10 * 60
+    public static let defaultWindow: TimeInterval = 60
 
     public let window: TimeInterval
 
@@ -20,71 +20,66 @@ public struct MetricEngine: Sendable {
 
         let descriptorsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
         let cutoff = now.addingTimeInterval(-window)
-        var accumulators: [String: AgentAccumulator] = [:]
+        var latestSamples: [String: GenerationSample] = [:]
 
         for sample in samples {
             guard descriptorsByID[sample.agentID] != nil,
                   sample.outputTokens >= 0,
                   sample.reasoningTokens >= 0,
-                  sample.endedAt > sample.startedAt
+                  sample.endedAt > sample.startedAt,
+                  sample.endedAt >= cutoff,
+                  sample.endedAt <= now
             else {
                 continue
             }
 
-            let overlapStart = max(sample.startedAt, cutoff)
-            let overlapEnd = min(sample.endedAt, now)
-            guard overlapEnd > overlapStart else {
+            if let current = latestSamples[sample.agentID], !isLater(sample, than: current) {
                 continue
             }
-
-            let fullDuration = sample.endedAt.timeIntervalSince(sample.startedAt)
-            let overlapDuration = overlapEnd.timeIntervalSince(overlapStart)
-            let overlapRatio = overlapDuration / fullDuration
-            var accumulator = accumulators[sample.agentID, default: AgentAccumulator()]
-            accumulator.outputTokens += Double(sample.outputTokens) * overlapRatio
-            accumulator.reasoningTokens += Double(sample.reasoningTokens) * overlapRatio
-            accumulator.intervals.append(DateInterval(start: overlapStart, end: overlapEnd))
-            accumulator.sampleCount += 1
-            accumulator.isEstimated = accumulator.isEstimated
-                || sample.tokenQuality == .estimated
-                || sample.timingQuality == .inferred
-                || overlapRatio < 1
-            accumulators[sample.agentID] = accumulator
+            latestSamples[sample.agentID] = sample
         }
 
-        let agentMetrics = accumulators.compactMap { agentID, accumulator -> AgentMetrics? in
-            let activeSeconds = unionDuration(accumulator.intervals)
-            guard let descriptor = descriptorsByID[agentID], activeSeconds > 0 else {
-                return nil
+        let agentMetrics = descriptorsByID.map { agentID, descriptor -> AgentMetrics in
+            guard let sample = latestSamples[agentID] else {
+                return AgentMetrics(
+                    id: agentID,
+                    descriptor: descriptor,
+                    outputTokens: 0,
+                    reasoningTokens: 0,
+                    activeSeconds: 0,
+                    averageTPS: 0,
+                    sampleCount: 0,
+                    isEstimated: false
+                )
             }
+            let activeSeconds = sample.endedAt.timeIntervalSince(sample.startedAt)
             return AgentMetrics(
                 id: agentID,
                 descriptor: descriptor,
-                outputTokens: accumulator.outputTokens,
-                reasoningTokens: accumulator.reasoningTokens,
+                outputTokens: Double(sample.outputTokens),
+                reasoningTokens: Double(sample.reasoningTokens),
                 activeSeconds: activeSeconds,
-                averageTPS: accumulator.outputTokens / activeSeconds,
-                sampleCount: accumulator.sampleCount,
-                isEstimated: accumulator.isEstimated
+                averageTPS: Double(sample.outputTokens) / activeSeconds,
+                sampleCount: 1,
+                isEstimated: sample.tokenQuality == .estimated || sample.timingQuality == .inferred
             )
         }
 
         let grouped = Dictionary(grouping: agentMetrics, by: { $0.descriptor.sessionID })
         let sessions = grouped.map { sessionID, metrics in
             let sortedAgents = metrics.sorted(by: agentSort)
-            let outputTokens = metrics.reduce(0) { $0 + $1.outputTokens }
-            let activeSeconds = metrics.reduce(0) { $0 + $1.activeSeconds }
-            let wallActiveSeconds = unionDuration(
-                metrics.flatMap { accumulators[$0.id]?.intervals ?? [] }
-            )
+            let freshMetrics = sortedAgents.filter(\.hasFreshSample)
+            let outputTokens = freshMetrics.reduce(0) { $0 + $1.outputTokens }
+            let activeSeconds = freshMetrics.reduce(0) { $0 + $1.activeSeconds }
+            let totalTPS = freshMetrics.reduce(0) { $0 + $1.averageTPS }
             return SessionMetrics(
                 id: sessionID,
                 agents: sortedAgents,
-                averageTPS: outputTokens / activeSeconds,
-                totalTPS: outputTokens / wallActiveSeconds,
+                averageTPS: freshMetrics.isEmpty ? 0 : totalTPS / Double(freshMetrics.count),
+                totalTPS: totalTPS,
                 outputTokens: outputTokens,
                 activeSeconds: activeSeconds,
-                isEstimated: metrics.contains(where: \.isEstimated)
+                isEstimated: freshMetrics.contains(where: \.isEstimated)
             )
         }
         .sorted(by: sessionSort)
@@ -93,19 +88,20 @@ public struct MetricEngine: Sendable {
             return .empty(at: now, windowSeconds: window)
         }
 
-        let outputTokens = agentMetrics.reduce(0) { $0 + $1.outputTokens }
-        let activeSeconds = agentMetrics.reduce(0) { $0 + $1.activeSeconds }
-        let wallActiveSeconds = unionDuration(accumulators.values.flatMap(\.intervals))
+        let freshAgentMetrics = agentMetrics.filter(\.hasFreshSample)
+        let outputTokens = freshAgentMetrics.reduce(0) { $0 + $1.outputTokens }
+        let activeSeconds = freshAgentMetrics.reduce(0) { $0 + $1.activeSeconds }
+        let totalTPS = sessions.reduce(0) { $0 + $1.totalTPS }
         return DashboardMetrics(
             generatedAt: now,
             windowSeconds: window,
             sessions: sessions,
-            averageTPS: outputTokens / activeSeconds,
-            totalTPS: outputTokens / wallActiveSeconds,
+            averageTPS: freshAgentMetrics.isEmpty ? 0 : totalTPS / Double(freshAgentMetrics.count),
+            totalTPS: totalTPS,
             outputTokens: outputTokens,
             activeSeconds: activeSeconds,
-            activeAgentCount: agentMetrics.count,
-            isEstimated: agentMetrics.contains(where: \.isEstimated)
+            activeAgentCount: freshAgentMetrics.count,
+            isEstimated: freshAgentMetrics.contains(where: \.isEstimated)
         )
     }
 
@@ -128,31 +124,13 @@ public struct MetricEngine: Sendable {
         return lhs.id < rhs.id
     }
 
-    private func unionDuration(_ intervals: [DateInterval]) -> TimeInterval {
-        let sorted = intervals
-            .filter { $0.duration > 0 }
-            .sorted { $0.start < $1.start }
-        guard var current = sorted.first else {
-            return 0
+    private func isLater(_ candidate: GenerationSample, than current: GenerationSample) -> Bool {
+        if candidate.endedAt != current.endedAt {
+            return candidate.endedAt > current.endedAt
         }
-
-        var duration: TimeInterval = 0
-        for interval in sorted.dropFirst() {
-            if interval.start <= current.end {
-                current = DateInterval(start: current.start, end: max(current.end, interval.end))
-            } else {
-                duration += current.duration
-                current = interval
-            }
+        if candidate.startedAt != current.startedAt {
+            return candidate.startedAt > current.startedAt
         }
-        return duration + current.duration
+        return candidate.id > current.id
     }
-}
-
-private struct AgentAccumulator {
-    var outputTokens: Double = 0
-    var reasoningTokens: Double = 0
-    var intervals: [DateInterval] = []
-    var sampleCount = 0
-    var isEstimated = false
 }

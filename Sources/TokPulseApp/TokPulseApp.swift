@@ -41,7 +41,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(sender)
         } else {
+            NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
         }
     }
 
@@ -103,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         } else {
             button.title = "Avg — · Σ —"
-            button.setAccessibilityValue("No measured responses in the last ten minutes")
+            button.setAccessibilityValue("No Agent has a completed sample in the last minute")
         }
     }
 }
