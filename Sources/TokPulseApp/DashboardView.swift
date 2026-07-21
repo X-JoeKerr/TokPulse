@@ -102,16 +102,8 @@ struct DashboardView: View {
                 Label("No Agent sample in the last minute", systemImage: "pause.circle")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 72)
+                    .frame(maxWidth: .infinity, minHeight: Self.scrollViewportHeight)
                     .accessibilityLabel("No Agent has a completed sample from the last minute")
-            } else if self.metrics.sessions.count <= Self.visibleSessionLimit {
-                VStack(spacing: Self.sessionSpacing) {
-                    ForEach(self.metrics.sessions) { session in
-                        SessionCardView(
-                            session: session,
-                            isExpanded: self.expansionBinding(for: session.id))
-                    }
-                }
             } else {
                 ScrollView {
                     LazyVStack(spacing: Self.sessionSpacing) {
@@ -129,9 +121,8 @@ struct DashboardView: View {
     }
 
     private static let sessionSpacing: CGFloat = 8
-    private static let visibleSessionLimit = 5
-    // Roughly five collapsed session cards plus inter-card spacing.
-    private static let scrollViewportHeight: CGFloat = 5 * 62 + 4 * 8
+    // Six collapsed session cards plus inter-card spacing. Expanded content scrolls within this cap.
+    private static let scrollViewportHeight: CGFloat = 6 * 62 + 5 * 8
 
     private var footer: some View {
         Text("Updated \(MetricFormatting.updatedTime(self.metrics.generatedAt))")

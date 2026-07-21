@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let monitor = SessionMonitor()
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
+    private var dashboardHostingView: MenuHostingView<DashboardContainerView>?
     private var cancellables: Set<AnyCancellable> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -35,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        dashboardHostingView?.synchronizeFrameWithContent()
         monitor.refreshNow()
     }
 
@@ -62,9 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             rootView: DashboardContainerView(monitor: monitor)
         )
         hostingView.sizingOptions = [.intrinsicContentSize]
-        hostingView.frame.size = hostingView.fittingSize
+        hostingView.synchronizeFrameWithContent()
         cardItem.view = hostingView
         menu.addItem(cardItem)
+        dashboardHostingView = hostingView
 
         menu.addItem(.separator())
 
@@ -132,11 +135,34 @@ private struct DashboardContainerView: View {
 }
 
 private final class MenuHostingView<Content: View>: NSHostingView<Content> {
+    private static var menuWidth: CGFloat { 360 }
+
+    private var isSynchronizingSize = false
+
     override var allowsVibrancy: Bool {
         true
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
+    }
+
+    override func layout() {
+        super.layout()
+        synchronizeFrameWithContent()
+    }
+
+    func synchronizeFrameWithContent() {
+        guard !isSynchronizingSize else { return }
+        isSynchronizingSize = true
+        defer { isSynchronizingSize = false }
+
+        let contentHeight = max(1, ceil(fittingSize.height))
+        guard abs(frame.height - contentHeight) > 0.5 || abs(frame.width - Self.menuWidth) > 0.5 else {
+            return
+        }
+
+        frame.size = NSSize(width: Self.menuWidth, height: contentHeight)
+        superview?.needsLayout = true
     }
 }
