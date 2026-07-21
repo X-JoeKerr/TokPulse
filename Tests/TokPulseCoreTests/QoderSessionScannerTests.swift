@@ -53,6 +53,45 @@ func qoderScannerReportsSubagentAwaitingNextResponseAsAnswering() {
 }
 
 @Test
+func qoderScannerDoesNotCommitCLIResponseUntilTerminalBlockArrives() throws {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("TokPulseQoderIncrementalTests-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let file = directory.appendingPathComponent("incremental.jsonl")
+    let prefix = """
+    {"type":"runtime-config","sessionId":"s-incremental","model":"gpt-q","timestamp":1784601500000}
+    {"type":"user","timestamp":"2026-07-21T03:00:00.000Z","message":{"role":"user","content":"hello"},"isSidechain":false,"cwd":"/tmp/proj","sessionId":"s-incremental"}
+    {"type":"assistant","timestamp":"2026-07-21T03:00:05.000Z","message":{"role":"assistant","model":"gpt-q","content":[{"type":"thinking","thinking":"tttttttt"}]},"isSidechain":false,"cwd":"/tmp/proj","sessionId":"s-incremental"}
+    """ + "\n"
+    try Data(prefix.utf8).write(to: file)
+
+    let scanner = QoderSessionScanner(
+        cliRoots: [directory],
+        questRoots: [],
+        fileRecencyLimit: nil
+    )
+    let incomplete = scanner.scan()
+
+    #expect(incomplete.samples.isEmpty)
+    #expect(incomplete.activities.first?.state == .answering)
+
+    let terminal = """
+    {"type":"assistant","timestamp":"2026-07-21T03:00:07.000Z","message":{"role":"assistant","model":"gpt-q","content":[{"type":"text","text":"aaaabbbb"}]},"isSidechain":false,"cwd":"/tmp/proj","sessionId":"s-incremental"}
+    """ + "\n"
+    try Data((prefix + terminal).utf8).write(to: file)
+
+    let complete = scanner.scan()
+
+    // Existing estimator: 8 ASCII thinking chars (2) + 8 ASCII text chars (2).
+    #expect(complete.samples.map(\.outputTokens) == [4])
+    #expect(complete.samples.map(\.reasoningTokens) == [2])
+    #expect(complete.activities.first?.state == .idle)
+}
+
+@Test
 func qoderScannerParsesQuestSessionWithCompanionMetadata() {
     let result = scanQoderQuestFixture("task-fixture.session.execution.jsonl")
 

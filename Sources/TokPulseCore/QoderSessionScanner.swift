@@ -258,6 +258,7 @@ private struct ResponseGroup {
     var endedAt: Date
     var estimate = TokenEstimate()
     var hasOutstandingToolCall = false
+    var isComplete = false
 }
 
 private final class QoderFileParser {
@@ -376,15 +377,18 @@ private final class QoderFileParser {
         messageModel = message?["model"] as? String ?? messageModel
         var estimate = TokenEstimate()
         var sawToolUse = false
+        var sawTerminalBlock = false
         if let blocks = message?["content"] as? [[String: Any]] {
             for block in blocks {
                 switch block["type"] as? String {
                 case "text":
+                    sawTerminalBlock = true
                     estimate.add(output: block["text"] as? String ?? "")
                 case "thinking":
                     estimate.add(reasoning: block["thinking"] as? String ?? "")
                 case "tool_use":
                     sawToolUse = true
+                    sawTerminalBlock = true
                     if let input = block["input"],
                        let data = try? JSONSerialization.data(
                            withJSONObject: input,
@@ -398,7 +402,12 @@ private final class QoderFileParser {
                 }
             }
         }
-        extendGroup(to: timestamp, estimate: estimate, sawToolCall: sawToolUse)
+        extendGroup(
+            to: timestamp,
+            estimate: estimate,
+            sawToolCall: sawToolUse,
+            isComplete: sawTerminalBlock
+        )
     }
 
     private func finishCLI() {
@@ -478,7 +487,12 @@ private final class QoderFileParser {
                 break
             }
         }
-        extendGroup(to: timestamp, estimate: estimate, sawToolCall: sawToolCall)
+        extendGroup(
+            to: timestamp,
+            estimate: estimate,
+            sawToolCall: sawToolCall,
+            isComplete: true
+        )
     }
 
     private func finishQuest() {
@@ -526,11 +540,17 @@ private final class QoderFileParser {
 
     // MARK: - Shared assembly
 
-    private func extendGroup(to timestamp: Date, estimate: TokenEstimate, sawToolCall: Bool) {
+    private func extendGroup(
+        to timestamp: Date,
+        estimate: TokenEstimate,
+        sawToolCall: Bool,
+        isComplete: Bool
+    ) {
         if var group {
             group.endedAt = max(group.endedAt, timestamp)
             group.estimate.merge(estimate)
             group.hasOutstandingToolCall = group.hasOutstandingToolCall || sawToolCall
+            group.isComplete = group.isComplete || isComplete
             self.group = group
         } else {
             var group = ResponseGroup(
@@ -539,6 +559,7 @@ private final class QoderFileParser {
             )
             group.estimate = estimate
             group.hasOutstandingToolCall = sawToolCall
+            group.isComplete = isComplete
             self.group = group
         }
         pendingInputAt = nil
@@ -549,6 +570,9 @@ private final class QoderFileParser {
             return
         }
         self.group = nil
+        guard group.isComplete else {
+            return
+        }
         appendSample(for: group)
     }
 
@@ -613,7 +637,10 @@ private final class QoderFileParser {
 
         let state: AgentActivityState
         let since: Date?
-        if let finalGroup, finalGroup.hasOutstandingToolCall {
+        if let finalGroup, !finalGroup.isComplete {
+            state = .answering
+            since = finalGroup.startedAt
+        } else if let finalGroup, finalGroup.hasOutstandingToolCall {
             state = .waitingOnTool
             since = finalGroup.endedAt
         } else if let pendingInputAt {

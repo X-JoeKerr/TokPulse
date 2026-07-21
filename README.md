@@ -1,50 +1,67 @@
 # TokPulse
 
-TokPulse is a native macOS menu bar monitor for effective Codex output throughput. It reads local Codex rollout JSONL and groups root agents and subagents into sessions. Each Agent contributes its latest completed model-call rate while that sample is at most 60 seconds old.
+TokPulse is a native macOS menu bar monitor for effective AI Agent output throughput. It reads local Codex and Qoder session logs and groups root agents and subagents into sessions.
 
 The menu bar shows:
 
 - `Avg`: the arithmetic mean of all currently available Agent rates.
 - `Σ`: the arithmetic sum of those same Agent rates.
 
-The popover expands each root session into its root agent and subagents, with each Agent's last rate, latest output-token count, inferred model-call duration, and model metadata. Session and global `Σ` values are additive, so the visible Agent values add up to the menu-bar total before display rounding.
+The menu expands each session into its root agent and subagents. Session and global `Σ` values are additive, so the visible Agent rates add up to the menu-bar total before display rounding.
 
-## Metric boundary
+## How TPS is calculated
 
-TokPulse measures **model-effective output TPS**, not pure decode TPS:
+For each Agent, TokPulse selects its latest completed response that ended within the last 60 seconds:
 
-- Counts come from `last_token_usage.output_tokens`, including reasoning, visible output, tool-call arguments, and other generated structure.
-- Model-active timing is inferred from input-ready, model output, tool-call, tool-output, and turn lifecycle timestamps.
-- Tool execution, approval/user waits, idle time, and time between prompts are excluded when the event pairs are complete.
-- A response is committed only after its token usage arrives. Its full output-token count is divided by its full inferred model-active duration.
-- For each Agent, only the latest completed sample whose end time is within the last 60 seconds qualifies. The value stays unchanged until a newer sample arrives or the 60-second TTL expires; it is not prorated at the cutoff.
-- A Subagent disappears when its sample expires. A stale Main/Root Agent can remain as `—` while its session file is still within the three-minute inventory, but it does not participate in `Avg` or `Σ`.
-- This is a last-observed segment rate, not the exact number of tokens arriving during the current second. Codex local logs do not expose per-token timestamps.
+```text
+Agent TPS = output tokens / inferred model-active seconds
+Σ         = sum of all qualifying Agent rates
+Avg       = arithmetic mean of all qualifying Agent rates
+```
+
+Tool execution, approval/user waits, idle time, and time between prompts are excluded when the event pairs are complete. A value is held until a newer completed response arrives or its 60-second TTL expires; it is not prorated at the cutoff. Stale subagents disappear, while a root Agent can remain as `—` for up to three minutes without participating in `Avg` or `Σ`.
+
+Token sources differ by provider:
+
+- **Codex:** uses reported `last_token_usage.output_tokens`. Model-active time is inferred from input-ready, model-output, tool-call, tool-output, and turn lifecycle timestamps.
+- **Qoder CLI / Quest:** neither format reports token usage, so visible text, plaintext reasoning, and tool arguments use `ceil(ASCII characters / 4) + non-ASCII characters`. Opaque/redacted reasoning is excluded. Tokens and model-active timing are therefore labelled estimated/inferred.
+
+This is a last-observed response rate, not pure decode TPS or the exact number of tokens arriving during the current second.
+
+## Supported AI clients
+
+| Client | Sessions | Local read-only source |
+| --- | --- | --- |
+| Codex | Root Agents and subagents | `~/.codex/sessions`, `~/.codex/archived_sessions` |
+| Qoder CLI | Root Agents and subagents | `~/.qoder/projects` |
+| Qoder Quest | Quest sessions | `~/Library/Application Support/Qoder/SharedClientCache/cli/projects` |
 
 ## Privacy
 
-The app reads `~/.codex/sessions` and `~/.codex/archived_sessions` locally. It extracts structural metadata, timestamps, IDs, and token counts. Prompt text, reasoning text, tool arguments, and tool output are never stored, displayed, or logged. TokPulse makes no network requests.
+Session logs are read locally and never modified. TokPulse parses only the fields needed for metrics and does not retain content; prompt text, reasoning text, tool arguments, and tool output are never stored, displayed, or logged. TokPulse makes no network requests.
 
-## Build and run
+## Install
 
 TokPulse targets macOS 13 or newer and has no third-party dependencies.
 
-With a matching Xcode or Command Line Tools installation:
+Build the app bundle, install it in `/Applications`, and launch it:
+
+```sh
+./scripts/build-app.sh
+ditto .build/TokPulse.app /Applications/TokPulse.app
+open -a TokPulse
+```
+
+After installation, TokPulse can also be launched from Spotlight by searching for `TokPulse`.
+
+For a standard SwiftPM build, install a matching Xcode or Command Line Tools toolchain, then run:
 
 ```sh
 swift test
 swift build -c release
 ```
 
-On the current development machine, the installed Swift compiler and SDK patch versions do not match for SwiftPM manifest compilation. The checked-in local scripts compile against the host SDK directly while leaving the standard package intact:
-
-```sh
-./scripts/test-local.sh
-./scripts/build-app.sh
-open .build/TokPulse.app
-```
-
-The direct-build app targets the current host OS. Use a matching full Xcode toolchain when producing a macOS 13-compatible distribution build.
+If the installed Swift compiler and SDK patch versions do not match, use `./scripts/test-local.sh` and `./scripts/build-app.sh`; the direct-build app targets the current host OS.
 
 ## Design note
 
