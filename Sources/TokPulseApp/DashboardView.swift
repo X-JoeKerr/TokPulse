@@ -4,19 +4,11 @@ import TokPulseCore
 
 struct DashboardView: View {
     let metrics: DashboardMetrics
-    let onRefresh: () -> Void
-    let onQuit: () -> Void
 
     @State private var expandedSessionIDs: Set<String>
 
-    init(
-        metrics: DashboardMetrics,
-        onRefresh: @escaping () -> Void = {},
-        onQuit: @escaping () -> Void = { NSApp.terminate(nil) }
-    ) {
+    init(metrics: DashboardMetrics) {
         self.metrics = metrics
-        self.onRefresh = onRefresh
-        self.onQuit = onQuit
         self._expandedSessionIDs = State(initialValue: Set(metrics.sessions.prefix(1).map(\.id)))
     }
 
@@ -129,27 +121,10 @@ struct DashboardView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 12) {
-            Button(action: self.onRefresh) {
-                Label("Refresh", systemImage: "arrow.clockwise")
-            }
-            .keyboardShortcut("r", modifiers: .command)
-            .accessibilityHint("Refresh Codex session metrics")
-
-            Spacer()
-
-            Text("Updated \(MetricFormatting.updatedTime(self.metrics.generatedAt))")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-
-            Spacer()
-
-            Button("Quit", action: self.onQuit)
-                .keyboardShortcut("q", modifiers: .command)
-                .accessibilityLabel("Quit TokPulse")
-        }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
+        Text("Updated \(MetricFormatting.updatedTime(self.metrics.generatedAt))")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private var provenanceText: String {
