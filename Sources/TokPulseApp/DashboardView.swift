@@ -6,6 +6,7 @@ struct DashboardView: View {
     let metrics: DashboardMetrics
 
     @State private var expandedSessionIDs: Set<String>
+    @State private var cardHeights: [String: CGFloat] = [:]
 
     init(metrics: DashboardMetrics) {
         self.metrics = metrics
@@ -106,19 +107,43 @@ struct DashboardView: View {
                     .accessibilityLabel("No Agent has a completed sample from the last minute")
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 8) {
+                    LazyVStack(spacing: Self.sessionSpacing) {
                         ForEach(self.metrics.sessions) { session in
                             SessionCardView(
                                 session: session,
                                 isExpanded: self.expansionBinding(for: session.id))
+                                .background(GeometryReader { proxy in
+                                    Color.clear.preference(
+                                        key: SessionCardHeightKey.self,
+                                        value: [session.id: proxy.size.height])
+                                })
                         }
                     }
                     .padding(.vertical, 1)
                 }
-                .frame(maxHeight: 430)
+                .frame(height: self.sessionListHeight)
+                .onPreferenceChange(SessionCardHeightKey.self) { heights in
+                    self.cardHeights = heights
+                }
             }
         }
     }
+
+    // Fit the list to its content, capped at the height of the first five
+    // session cards; beyond that the list scrolls.
+    private var sessionListHeight: CGFloat {
+        let heights = self.metrics.sessions.map {
+            self.cardHeights[$0.id] ?? Self.fallbackCardHeight
+        }
+        let visible = heights.prefix(Self.visibleSessionLimit)
+        let cap = visible.reduce(0, +) + Self.sessionSpacing * CGFloat(max(visible.count - 1, 0))
+        let total = heights.reduce(0, +) + Self.sessionSpacing * CGFloat(max(heights.count - 1, 0))
+        return min(total, cap) + 2
+    }
+
+    private static let sessionSpacing: CGFloat = 8
+    private static let visibleSessionLimit = 5
+    private static let fallbackCardHeight: CGFloat = 62
 
     private var footer: some View {
         Text("Updated \(MetricFormatting.updatedTime(self.metrics.generatedAt))")
@@ -143,6 +168,14 @@ struct DashboardView: View {
                     self.expandedSessionIDs.remove(id)
                 }
             })
+    }
+}
+
+private struct SessionCardHeightKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] { [:] }
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
 
