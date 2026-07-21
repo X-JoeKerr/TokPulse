@@ -15,16 +15,16 @@ struct TokPulseApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let monitor = SessionMonitor()
-    private let popover = NSPopover()
     private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
     private var cancellables: Set<AnyCancellable> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         configureStatusItem()
-        configurePopover()
+        attachMenu()
         observeMetrics()
     }
 
@@ -34,17 +34,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc
-    private func togglePopover(_ sender: Any?) {
-        guard let button = statusItem?.button else { return }
-
-        if popover.isShown {
-            popover.performClose(sender)
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
-        }
+    func menuWillOpen(_ menu: NSMenu) {
+        monitor.refreshNow()
     }
 
     private func configureStatusItem() {
@@ -52,8 +43,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.autosaveName = "TokPulse.StatusItem"
         guard let button = item.button else { return }
 
-        button.target = self
-        button.action = #selector(togglePopover(_:))
         button.imagePosition = .imageLeading
         button.imageScaling = .scaleProportionallyDown
         button.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
@@ -64,13 +53,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusItem(metrics: monitor.metrics, answeringAgentCount: monitor.answeringAgentCount)
     }
 
-    private func configurePopover() {
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentSize = NSSize(width: 360, height: 640)
-        popover.contentViewController = NSHostingController(
+    private func attachMenu() {
+        let menu = NSMenu()
+        menu.delegate = self
+
+        let cardItem = NSMenuItem()
+        let hostingView = MenuHostingView(
             rootView: DashboardContainerView(monitor: monitor)
         )
+        hostingView.sizingOptions = [.intrinsicContentSize]
+        hostingView.frame.size = hostingView.fittingSize
+        cardItem.view = hostingView
+        menu.addItem(cardItem)
+
+        statusMenu = menu
+        statusItem?.menu = menu
     }
 
     private func observeMetrics() {
@@ -115,5 +112,15 @@ private struct DashboardContainerView: View {
 
     var body: some View {
         DashboardView(metrics: monitor.metrics, onRefresh: monitor.refreshNow)
+    }
+}
+
+private final class MenuHostingView<Content: View>: NSHostingView<Content> {
+    override var allowsVibrancy: Bool {
+        true
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
     }
 }
