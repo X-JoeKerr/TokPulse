@@ -68,17 +68,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let refreshItem = NSMenuItem()
-        refreshItem.title = "Refresh"
-        refreshItem.view = PersistentRefreshMenuView(
-            title: "Refresh",
-            systemImageName: "arrow.clockwise",
-            shortcutText: "⌘ R",
-            onClick: { [weak self] in
-                self?.monitor.refreshNow()
-            })
-        menu.addItem(refreshItem)
-
         let quitItem = NSMenuItem(title: "Quit TokPulse", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         if let quitImage = NSImage(systemSymbolName: "xmark.rectangle", accessibilityDescription: nil) {
@@ -90,13 +79,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         statusMenu = menu
         statusItem?.menu = menu
-    }
-
-    func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {
-        for menuItem in menu.items {
-            guard let row = menuItem.view as? PersistentRefreshMenuView else { continue }
-            row.setHighlighted(menuItem === item)
-        }
     }
 
     @objc
