@@ -198,9 +198,17 @@ private struct SessionCardView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(self.title)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text(self.title)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        Text(self.sourceLabel)
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(self.sourceColor)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .background(self.sourceColor.opacity(0.14), in: Capsule())
+                    }
                     Text(
                         "Avg \(MetricFormatting.tps(self.session.averageTPS, available: self.hasFreshSample)) · "
                             + "Σ \(MetricFormatting.tps(self.session.totalTPS, available: self.hasFreshSample)) t/s")
@@ -222,7 +230,7 @@ private struct SessionCardView: View {
             }
             .contentShape(Rectangle())
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Session \(self.title)")
+            .accessibilityLabel("Session \(self.title), source \(self.sourceLabel)")
             .accessibilityValue(
                 "Average \(MetricFormatting.tps(self.session.averageTPS, available: self.hasFreshSample)), combined "
                     + "\(MetricFormatting.tps(self.session.totalTPS, available: self.hasFreshSample)) tokens per second, "
@@ -238,6 +246,23 @@ private struct SessionCardView: View {
 
     private var hasFreshSample: Bool {
         self.session.activeAgentCount > 0
+    }
+
+    private var source: AgentSource {
+        (self.session.agents.first(where: { $0.descriptor.kind == .root })
+            ?? self.session.agents.first)?.descriptor.source ?? .codex
+    }
+
+    private var sourceLabel: String {
+        switch self.source {
+        case .codex: "CODEX"
+        case .qoderCLI: "QODER"
+        case .qoderQuest: "QODER QUEST"
+        }
+    }
+
+    private var sourceColor: Color {
+        self.source.isQoder ? Color.purple : Color.teal
     }
 
     private var title: String {

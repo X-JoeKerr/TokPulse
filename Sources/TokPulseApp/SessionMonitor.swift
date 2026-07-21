@@ -9,17 +9,20 @@ final class SessionMonitor: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var diagnosticCount = 0
 
-    private let scanner: CodexSessionScanner
+    private let codexScanner: CodexSessionScanner
+    private let qoderScanner: QoderSessionScanner
     private let engine: MetricEngine
     private let refreshInterval: Duration
     private var refreshLoop: Task<Void, Never>?
 
     init(
-        scanner: CodexSessionScanner = CodexSessionScanner(),
+        codexScanner: CodexSessionScanner = CodexSessionScanner(),
+        qoderScanner: QoderSessionScanner = QoderSessionScanner(),
         engine: MetricEngine = MetricEngine(),
         refreshInterval: Duration = .seconds(2)
     ) {
-        self.scanner = scanner
+        self.codexScanner = codexScanner
+        self.qoderScanner = qoderScanner
         self.engine = engine
         self.refreshInterval = refreshInterval
         self.metrics = .empty(at: Date(), windowSeconds: engine.window)
@@ -53,11 +56,15 @@ final class SessionMonitor: ObservableObject {
         guard !isRefreshing else { return }
         isRefreshing = true
 
-        let scanner = self.scanner
+        let codexScanner = self.codexScanner
+        let qoderScanner = self.qoderScanner
         let engine = self.engine
         let now = Date()
         let output = await Task.detached(priority: .utility) {
-            let scan = scanner.scan(at: now)
+            let scan = SessionScanResult.merged(
+                generatedAt: now,
+                [codexScanner.scan(at: now), qoderScanner.scan(at: now)]
+            )
             let metrics = engine.calculate(at: now, agents: scan.agents, samples: scan.samples)
             return (scan, metrics)
         }.value

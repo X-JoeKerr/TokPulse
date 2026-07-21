@@ -5,6 +5,16 @@ public enum AgentKind: String, Codable, Sendable {
     case subagent
 }
 
+public enum AgentSource: String, Codable, Sendable {
+    case codex
+    case qoderCLI
+    case qoderQuest
+
+    public var isQoder: Bool {
+        self != .codex
+    }
+}
+
 public enum TokenCountQuality: String, Codable, Sendable {
     case reported
     case estimated
@@ -20,6 +30,7 @@ public struct AgentDescriptor: Identifiable, Hashable, Sendable {
     public let sessionID: String
     public let parentAgentID: String?
     public let kind: AgentKind
+    public let source: AgentSource
     public let name: String
     public let model: String?
     public let workingDirectory: String?
@@ -30,6 +41,7 @@ public struct AgentDescriptor: Identifiable, Hashable, Sendable {
         sessionID: String,
         parentAgentID: String? = nil,
         kind: AgentKind,
+        source: AgentSource = .codex,
         name: String,
         model: String? = nil,
         workingDirectory: String? = nil,
@@ -39,6 +51,7 @@ public struct AgentDescriptor: Identifiable, Hashable, Sendable {
         self.sessionID = sessionID
         self.parentAgentID = parentAgentID
         self.kind = kind
+        self.source = source
         self.name = name
         self.model = model
         self.workingDirectory = workingDirectory

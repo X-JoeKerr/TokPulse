@@ -79,7 +79,7 @@ func scannerDefaultInventoryExpiresFilesAfterThreeMinutes() throws {
     #expect(expiredResult.agents.isEmpty)
 }
 
-private func scanFixture(_ name: String) -> CodexSessionScanResult {
+private func scanFixture(_ name: String) -> SessionScanResult {
     CodexSessionScanner(roots: [fixtureURL(name)], fileRecencyLimit: nil).scan()
 }
 

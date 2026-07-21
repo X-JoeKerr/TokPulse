@@ -1,59 +1,5 @@
 import Foundation
 
-public enum CodexAgentActivityState: String, Hashable, Sendable {
-    case answering
-    case waitingOnTool
-    case idle
-    case unknown
-}
-
-public struct CodexAgentActivity: Hashable, Sendable {
-    public let agentID: String
-    public let turnID: String?
-    public let state: CodexAgentActivityState
-    public let since: Date?
-
-    public var isAnswering: Bool {
-        state == .answering
-    }
-}
-
-public enum CodexSessionDiagnosticCode: String, Hashable, Sendable {
-    case rootUnavailable
-    case fileMetadataUnavailable
-    case fileReadFailed
-    case malformedJSON
-    case missingSessionMetadata
-    case missingThreadID
-    case ambiguousTurnOwnership
-    case overlappingTurns
-    case unmatchedToolOutput
-    case unresolvedToolCalls
-    case duplicateTokenSnapshot
-    case missingTokenUsage
-    case missingModelInterval
-    case nonMonotonicTokenTotal
-}
-
-public struct CodexSessionDiagnostic: Hashable, Sendable {
-    public let code: CodexSessionDiagnosticCode
-    public let filePath: String
-    public let line: Int?
-    public let message: String
-}
-
-public struct CodexSessionScanResult: Hashable, Sendable {
-    public let generatedAt: Date
-    public let agents: [AgentDescriptor]
-    public let samples: [GenerationSample]
-    public let activities: [CodexAgentActivity]
-    public let diagnostics: [CodexSessionDiagnostic]
-
-    public var answeringAgentIDs: Set<String> {
-        Set(activities.lazy.filter(\.isAnswering).map(\.agentID))
-    }
-}
-
 /// Reads Codex rollout JSONL without retaining prompts, messages, or tool output.
 ///
 /// A scanner instance caches complete per-file parse results by modification date
@@ -91,7 +37,7 @@ public final class CodexSessionScanner: @unchecked Sendable {
         self.fileRecencyLimit = fileRecencyLimit
     }
 
-    public func scan(at now: Date = Date()) -> CodexSessionScanResult {
+    public func scan(at now: Date = Date()) -> SessionScanResult {
         lock.lock()
         defer { lock.unlock() }
 
@@ -159,7 +105,7 @@ public final class CodexSessionScanner: @unchecked Sendable {
         let activities = selected.compactMap(\.activity).sorted { $0.agentID < $1.agentID }
 
         diagnostics.sort(by: diagnosticSort)
-        return CodexSessionScanResult(
+        return SessionScanResult(
             generatedAt: now,
             agents: agents,
             samples: samples,
@@ -174,10 +120,10 @@ public final class CodexSessionScanner: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func inventoryFiles() -> (files: [URL], diagnostics: [CodexSessionDiagnostic]) {
+    private func inventoryFiles() -> (files: [URL], diagnostics: [SessionDiagnostic]) {
         let keys: [URLResourceKey] = [.isRegularFileKey]
         var filesByPath: [String: URL] = [:]
-        var diagnostics: [CodexSessionDiagnostic] = []
+        var diagnostics: [SessionDiagnostic] = []
 
         for root in roots {
             var isDirectory: ObjCBool = false
@@ -251,8 +197,8 @@ private struct CachedFile {
 private struct ParsedSessionFile {
     var agent: AgentDescriptor?
     var samples: [GenerationSample] = []
-    var activity: CodexAgentActivity?
-    var diagnostics: [CodexSessionDiagnostic] = []
+    var activity: AgentActivity?
+    var diagnostics: [SessionDiagnostic] = []
 }
 
 private struct SessionMetadata {
@@ -300,7 +246,7 @@ private final class SessionFileParser {
     private var result = ParsedSessionFile()
     private var metadata: SessionMetadata?
     private var activeTurn: ActiveTurn?
-    private var lastActivity = CodexAgentActivityState.idle
+    private var lastActivity = AgentActivityState.idle
     private var lastActivitySince: Date?
     private var lastTotalUsage: TokenUsageVector?
     private var observedModel: String?
@@ -376,7 +322,7 @@ private final class SessionFileParser {
         )
 
         if let activeTurn {
-            let state: CodexAgentActivityState
+            let state: AgentActivityState
             let since: Date?
             if let group = activeTurn.group, !group.outstandingCalls.isEmpty {
                 state = .waitingOnTool
@@ -394,14 +340,14 @@ private final class SessionFileParser {
                     ?? activeTurn.group?.lastToolOutputAt
                     ?? activeTurn.inputReadyAt
             }
-            result.activity = CodexAgentActivity(
+            result.activity = AgentActivity(
                 agentID: metadata.id,
                 turnID: activeTurn.id,
                 state: state,
                 since: since
             )
         } else {
-            result.activity = CodexAgentActivity(
+            result.activity = AgentActivity(
                 agentID: metadata.id,
                 turnID: nil,
                 state: lastActivity,
@@ -1039,12 +985,12 @@ private func clampedInt(_ value: Int64) -> Int {
 }
 
 private func diagnostic(
-    _ code: CodexSessionDiagnosticCode,
+    _ code: SessionDiagnosticCode,
     file: URL,
     line: Int? = nil,
     message: String
-) -> CodexSessionDiagnostic {
-    CodexSessionDiagnostic(code: code, filePath: file.path, line: line, message: message)
+) -> SessionDiagnostic {
+    SessionDiagnostic(code: code, filePath: file.path, line: line, message: message)
 }
 
 private func agentSort(_ lhs: AgentDescriptor, _ rhs: AgentDescriptor) -> Bool {
@@ -1061,7 +1007,7 @@ private func sampleSort(_ lhs: GenerationSample, _ rhs: GenerationSample) -> Boo
     return lhs.id < rhs.id
 }
 
-private func diagnosticSort(_ lhs: CodexSessionDiagnostic, _ rhs: CodexSessionDiagnostic) -> Bool {
+private func diagnosticSort(_ lhs: SessionDiagnostic, _ rhs: SessionDiagnostic) -> Bool {
     if lhs.filePath != rhs.filePath {
         return lhs.filePath < rhs.filePath
     }
