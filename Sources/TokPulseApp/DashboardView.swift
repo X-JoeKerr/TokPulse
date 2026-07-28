@@ -5,12 +5,18 @@ import TokPulseCore
 struct DashboardView: View {
     let metrics: DashboardMetrics
     let dailyMetrics: DailyMetrics
+    @ObservedObject var statusBarPreferences: StatusBarPreferences
 
     @State private var expandedSessionIDs: Set<String>
 
-    init(metrics: DashboardMetrics, dailyMetrics: DailyMetrics) {
+    init(
+        metrics: DashboardMetrics,
+        dailyMetrics: DailyMetrics,
+        statusBarPreferences: StatusBarPreferences
+    ) {
         self.metrics = metrics
         self.dailyMetrics = dailyMetrics
+        self.statusBarPreferences = statusBarPreferences
         self._expandedSessionIDs = State(initialValue: Set(metrics.sessions.prefix(1).map(\.id)))
     }
 
@@ -55,7 +61,9 @@ struct DashboardView: View {
                         available: self.metrics.activeAgentCount > 0),
                     unit: "t/s",
                     accessibilityTitle: "Average tokens per second",
-                    accessibilityUnit: "tokens per second")
+                    accessibilityUnit: "tokens per second",
+                    isSelected: self.statusBarPreferences.selection.contains(.average),
+                    action: { self.statusBarPreferences.toggle(.average) })
                 SummaryMetricView(
                     title: "Σ Combined",
                     value: MetricFormatting.tps(
@@ -63,7 +71,9 @@ struct DashboardView: View {
                         available: self.metrics.activeAgentCount > 0),
                     unit: "t/s",
                     accessibilityTitle: "Combined tokens per second",
-                    accessibilityUnit: "tokens per second")
+                    accessibilityUnit: "tokens per second",
+                    isSelected: self.statusBarPreferences.selection.contains(.combined),
+                    action: { self.statusBarPreferences.toggle(.combined) })
             }
 
             HStack(spacing: 8) {
@@ -72,7 +82,9 @@ struct DashboardView: View {
                     value: MetricFormatting.activeTime(self.dailyMetrics.activeSeconds),
                     unit: nil,
                     accessibilityTitle: "Active time today",
-                    accessibilityUnit: "active today")
+                    accessibilityUnit: "active today",
+                    isSelected: self.statusBarPreferences.selection.contains(.activeTime),
+                    action: { self.statusBarPreferences.toggle(.activeTime) })
                 SummaryMetricView(
                     title: "Today Rate",
                     value: MetricFormatting.tps(
@@ -80,7 +92,9 @@ struct DashboardView: View {
                         available: self.dailyMetrics.activeSeconds > 0),
                     unit: "t/s",
                     accessibilityTitle: "Token rate today",
-                    accessibilityUnit: "tokens per active second today")
+                    accessibilityUnit: "tokens per active second today",
+                    isSelected: self.statusBarPreferences.selection.contains(.todayRate),
+                    action: { self.statusBarPreferences.toggle(.todayRate) })
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -179,29 +193,47 @@ private struct SummaryMetricView: View {
     let unit: String?
     let accessibilityTitle: String
     let accessibilityUnit: String
+    let isSelected: Bool
+    let action: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(self.title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(self.value)
-                    .font(.title2.weight(.semibold))
-                    .monospacedDigit()
-                if let unit {
-                    Text(unit)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        Button(action: self.action) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(self.title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(self.value)
+                        .font(.title2.weight(.semibold))
+                        .monospacedDigit()
+                    if let unit {
+                        Text(unit)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(
+                self.isSelected ? Color.blue.opacity(0.22) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(self.isSelected ? Color.blue.opacity(0.75) : Color.clear, lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(self.accessibilityTitle)
-        .accessibilityValue(self.value == "—" ? "Unavailable" : "\(self.value) \(self.accessibilityUnit)")
+        .accessibilityValue(
+            (self.value == "—" ? "Unavailable" : "\(self.value) \(self.accessibilityUnit)")
+                + (self.isSelected ? ", displayed in status bar" : ", hidden from status bar")
+        )
+        .accessibilityHint("Toggles this metric in the status bar")
     }
 }
 

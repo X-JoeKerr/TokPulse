@@ -17,6 +17,7 @@ struct TokPulseApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let monitor = SessionMonitor()
+    private let statusBarPreferences = StatusBarPreferences()
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
     private var dashboardHostingView: MenuHostingView<DashboardContainerView>?
@@ -52,7 +53,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.setAccessibilityIdentifier("TokPulse.StatusItem")
         button.setAccessibilityTitle("TokPulse Codex output throughput")
         statusItem = item
-        updateStatusItem(metrics: monitor.metrics, answeringAgentCount: monitor.answeringAgentCount)
+        updateStatusItem(
+            metrics: monitor.metrics,
+            dailyMetrics: monitor.dailyMetrics,
+            answeringAgentCount: monitor.answeringAgentCount,
+            selection: statusBarPreferences.selection
+        )
     }
 
     private func attachMenu() {
@@ -61,7 +67,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let cardItem = NSMenuItem()
         let hostingView = MenuHostingView(
-            rootView: DashboardContainerView(monitor: monitor)
+            rootView: DashboardContainerView(
+                monitor: monitor,
+                statusBarPreferences: statusBarPreferences
+            )
         )
         hostingView.sizingOptions = [.intrinsicContentSize]
         hostingView.synchronizeFrameWithContent()
@@ -90,12 +99,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func observeMetrics() {
-        monitor.$metrics
-            .combineLatest(monitor.$answeringAgentCount)
-            .sink { [weak self] metrics, answeringAgentCount in
+        Publishers.CombineLatest4(
+            monitor.$metrics,
+            monitor.$dailyMetrics,
+            monitor.$answeringAgentCount,
+            statusBarPreferences.$selection
+        )
+            .sink { [weak self] output in
+                let (metrics, dailyMetrics, answeringAgentCount, selection) = output
                 self?.updateStatusItem(
                     metrics: metrics,
-                    answeringAgentCount: answeringAgentCount
+                    dailyMetrics: dailyMetrics,
+                    answeringAgentCount: answeringAgentCount,
+                    selection: selection
                 )
             }
             .store(in: &cancellables)
@@ -103,7 +119,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateStatusItem(
         metrics: DashboardMetrics,
-        answeringAgentCount: Int
+        dailyMetrics: DailyMetrics,
+        answeringAgentCount: Int,
+        selection: StatusBarMetricSelection
     ) {
         guard let button = statusItem?.button else { return }
 
@@ -112,25 +130,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         image?.isTemplate = true
         button.image = image
 
-        if metrics.activeAgentCount > 0 {
-            button.title = "Avg \(MetricFormatting.tps(metrics.averageTPS)) · "
-                + "Σ \(MetricFormatting.tps(metrics.totalTPS))"
-            button.setAccessibilityValue(
-                "Average \(MetricFormatting.tps(metrics.averageTPS)) and combined "
-                    + "\(MetricFormatting.tps(metrics.totalTPS)) tokens per second"
-            )
-        } else {
-            button.title = "Avg — · Σ —"
-            button.setAccessibilityValue("No Agent has a completed sample in the last minute")
+        let hasFreshSample = metrics.activeAgentCount > 0
+        let fields = StatusBarMetric.allCases.compactMap { metric -> String? in
+            guard selection.contains(metric) else { return nil }
+            switch metric {
+            case .average:
+                return "Avg \(MetricFormatting.tps(metrics.averageTPS, available: hasFreshSample))"
+            case .combined:
+                return "Σ \(MetricFormatting.tps(metrics.totalTPS, available: hasFreshSample))"
+            case .activeTime:
+                return "Active Time \(MetricFormatting.activeTime(dailyMetrics.activeSeconds))"
+            case .todayRate:
+                let rate = MetricFormatting.tps(
+                    dailyMetrics.tokensPerSecond,
+                    available: dailyMetrics.activeSeconds > 0
+                )
+                return "Today Rate \(rate)"
+            }
         }
+        button.title = fields.joined(separator: " · ")
+        button.setAccessibilityValue(
+            fields.isEmpty
+                ? "Status icon only"
+                : fields.joined(separator: ", ")
+        )
     }
 }
 
 private struct DashboardContainerView: View {
     @ObservedObject var monitor: SessionMonitor
+    @ObservedObject var statusBarPreferences: StatusBarPreferences
 
     var body: some View {
-        DashboardView(metrics: monitor.metrics, dailyMetrics: monitor.dailyMetrics)
+        DashboardView(
+            metrics: monitor.metrics,
+            dailyMetrics: monitor.dailyMetrics,
+            statusBarPreferences: statusBarPreferences
+        )
     }
 }
 
