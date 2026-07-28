@@ -129,7 +129,7 @@ struct DashboardView: View {
                     .accessibilityLabel("No Agent has a completed sample from the last minute")
             } else {
                 ScrollView {
-                    LazyVStack(spacing: Self.sessionSpacing) {
+                    VStack(spacing: Self.sessionSpacing) {
                         ForEach(self.metrics.sessions) { session in
                             SessionCardView(
                                 session: session,
