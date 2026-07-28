@@ -4,11 +4,13 @@ import TokPulseCore
 
 struct DashboardView: View {
     let metrics: DashboardMetrics
+    let dailyMetrics: DailyMetrics
 
     @State private var expandedSessionIDs: Set<String>
 
-    init(metrics: DashboardMetrics) {
+    init(metrics: DashboardMetrics, dailyMetrics: DailyMetrics) {
         self.metrics = metrics
+        self.dailyMetrics = dailyMetrics
         self._expandedSessionIDs = State(initialValue: Set(metrics.sessions.prefix(1).map(\.id)))
     }
 
@@ -51,13 +53,34 @@ struct DashboardView: View {
                     value: MetricFormatting.tps(
                         self.metrics.averageTPS,
                         available: self.metrics.activeAgentCount > 0),
-                    accessibilityTitle: "Average tokens per second")
+                    unit: "t/s",
+                    accessibilityTitle: "Average tokens per second",
+                    accessibilityUnit: "tokens per second")
                 SummaryMetricView(
                     title: "Σ Combined",
                     value: MetricFormatting.tps(
                         self.metrics.totalTPS,
                         available: self.metrics.activeAgentCount > 0),
-                    accessibilityTitle: "Combined tokens per second")
+                    unit: "t/s",
+                    accessibilityTitle: "Combined tokens per second",
+                    accessibilityUnit: "tokens per second")
+            }
+
+            HStack(spacing: 8) {
+                SummaryMetricView(
+                    title: "Active Time",
+                    value: MetricFormatting.activeTime(self.dailyMetrics.activeSeconds),
+                    unit: nil,
+                    accessibilityTitle: "Active time today",
+                    accessibilityUnit: "active today")
+                SummaryMetricView(
+                    title: "Today Rate",
+                    value: MetricFormatting.tps(
+                        self.dailyMetrics.tokensPerSecond,
+                        available: self.dailyMetrics.activeSeconds > 0),
+                    unit: "t/s",
+                    accessibilityTitle: "Token rate today",
+                    accessibilityUnit: "tokens per active second today")
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -121,8 +144,8 @@ struct DashboardView: View {
     }
 
     private static let sessionSpacing: CGFloat = 8
-    // Six collapsed session cards plus inter-card spacing. Expanded content scrolls within this cap.
-    private static let scrollViewportHeight: CGFloat = 6 * 62 + 5 * 8
+    // Five collapsed session cards plus spacing keeps the added summary row within the menu height.
+    private static let scrollViewportHeight: CGFloat = 5 * 62 + 4 * 8
 
     private var footer: some View {
         Text("Updated \(MetricFormatting.updatedTime(self.metrics.generatedAt))")
@@ -153,7 +176,9 @@ struct DashboardView: View {
 private struct SummaryMetricView: View {
     let title: String
     let value: String
+    let unit: String?
     let accessibilityTitle: String
+    let accessibilityUnit: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -164,9 +189,11 @@ private struct SummaryMetricView: View {
                 Text(self.value)
                     .font(.title2.weight(.semibold))
                     .monospacedDigit()
-                Text("t/s")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let unit {
+                    Text(unit)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(10)
@@ -174,7 +201,7 @@ private struct SummaryMetricView: View {
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(self.accessibilityTitle)
-        .accessibilityValue(self.value == "—" ? "Unavailable" : "\(self.value) tokens per second")
+        .accessibilityValue(self.value == "—" ? "Unavailable" : "\(self.value) \(self.accessibilityUnit)")
     }
 }
 

@@ -7,6 +7,11 @@ The menu bar shows:
 - `Avg`: the arithmetic mean of all currently available Agent rates.
 - `Σ`: the arithmetic sum of those same Agent rates.
 
+The expanded dashboard also shows:
+
+- `Active Time`: today's union of model-active intervals. Concurrent Agents count only once.
+- `Today Rate`: all output tokens from responses completed today divided by `Active Time`.
+
 The menu expands each session into its root agent and subagents. Session and global `Σ` values are additive, so the visible Agent rates add up to the menu-bar total before display rounding.
 
 ## How TPS is calculated
@@ -27,6 +32,8 @@ Token sources differ by provider:
 - **Qoder CLI / Quest:** neither format reports token usage, so visible text, plaintext reasoning, and tool arguments use `ceil(ASCII characters / 4) + non-ASCII characters`. Opaque/redacted reasoning is excluded. Tokens and model-active timing are therefore labelled estimated/inferred.
 
 This is a last-observed response rate, not pure decode TPS or the exact number of tokens arriving during the current second.
+
+`Active Time` and `Today Rate` use the Mac's current calendar day and refresh once per minute. Completed intervals are clipped at local midnight and merged before their duration is summed. A currently answering Agent contributes from the start of its current model-active interval through the refresh time; tool waits and idle time remain excluded.
 
 ## Supported AI clients
 

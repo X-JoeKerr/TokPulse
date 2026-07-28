@@ -130,7 +130,7 @@ private struct DashboardContainerView: View {
     @ObservedObject var monitor: SessionMonitor
 
     var body: some View {
-        DashboardView(metrics: monitor.metrics)
+        DashboardView(metrics: monitor.metrics, dailyMetrics: monitor.dailyMetrics)
     }
 }
 
