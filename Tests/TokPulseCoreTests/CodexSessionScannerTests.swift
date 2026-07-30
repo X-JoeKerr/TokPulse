@@ -79,6 +79,136 @@ func scannerDefaultInventoryExpiresFilesAfterThreeMinutes() throws {
     #expect(expiredResult.agents.isEmpty)
 }
 
+@Test
+func scannerReadsOnlyAppendedCodexBytesAndMatchesAColdParse() throws {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("TokPulseCodexAppendTests-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let source = try Data(contentsOf: fixtureURL("copied-parent-child.jsonl"))
+    let split = source.index(after: source[..<(source.count / 2)].lastIndex(of: 0x0A)!)
+    let file = directory.appendingPathComponent("appending.jsonl")
+    try Data(source[..<split]).write(to: file)
+
+    let scanner = CodexSessionScanner(roots: [directory], fileRecencyLimit: nil)
+    _ = scanner.scan()
+    try append(Data(source[split...]), to: file)
+    let incremental = scanner.refresh(changedFiles: [file])
+    let cold = scanFixture("copied-parent-child.jsonl")
+
+    #expect(incremental.agents == cold.agents)
+    #expect(incremental.samples == cold.samples)
+    #expect(incremental.activities == cold.activities)
+    #expect(incremental.diagnostics.map(\.code) == cold.diagnostics.map(\.code))
+    #expect(scanner.statistics.bytesRead == Int64(source.count))
+    #expect(scanner.statistics.inventoryPasses == 1)
+}
+
+@Test
+func scannerResetsCodexParserAfterTruncation() throws {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("TokPulseCodexTruncationTests-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let original = try Data(contentsOf: fixtureURL("copied-parent-child.jsonl"))
+    let replacement = try Data(contentsOf: fixtureURL("active-answering.jsonl"))
+    let file = directory.appendingPathComponent("reused.jsonl")
+    try original.write(to: file)
+
+    let scanner = CodexSessionScanner(roots: [directory], fileRecencyLimit: nil)
+    _ = scanner.scan()
+    let handle = try FileHandle(forWritingTo: file)
+    try handle.truncate(atOffset: 0)
+    try handle.write(contentsOf: replacement)
+    try handle.close()
+
+    let refreshed = scanner.refresh(changedFiles: [file])
+    #expect(refreshed.agents.map(\.id) == ["019f7f57-ee00-7000-8000-000000000001"])
+    #expect(refreshed.activities.first?.state == .answering)
+    #expect(scanner.statistics.bytesRead == Int64(original.count + replacement.count))
+    #expect(scanner.statistics.parserResets == 1)
+}
+
+@Test
+func scannerRereadsOnlyAnUnterminatedCodexTail() throws {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("TokPulseCodexTailTests-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let source = try Data(contentsOf: fixtureURL("parallel-tools.jsonl"))
+    let split = source.count / 2
+    let lastCompleteOffset = source[..<split].lastIndex(of: 0x0A)
+        .map { source.index(after: $0) } ?? 0
+    let file = directory.appendingPathComponent("partial.jsonl")
+    try Data(source[..<split]).write(to: file)
+
+    let scanner = CodexSessionScanner(roots: [directory], fileRecencyLimit: nil)
+    let partial = scanner.scan()
+    #expect(!partial.diagnostics.contains { $0.code == .malformedJSON })
+
+    try append(Data(source[split...]), to: file)
+    let incremental = scanner.refresh(changedFiles: [file])
+    let cold = scanFixture("parallel-tools.jsonl")
+    #expect(incremental.agents == cold.agents)
+    #expect(incremental.samples == cold.samples)
+    #expect(incremental.activities == cold.activities)
+    #expect(
+        scanner.statistics.bytesRead
+            == Int64(source.count + split - lastCompleteOffset)
+    )
+}
+
+@Test
+func scannerProjectsLiveAndRollingViewsFromOneCodexCache() throws {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("TokPulseCodexProjectionTests-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let file = directory.appendingPathComponent("active.jsonl")
+    try fileManager.copyItem(at: fixtureURL("active-answering.jsonl"), to: file)
+    let now = Date()
+    try fileManager.setAttributes([.modificationDate: now], ofItemAtPath: file.path)
+
+    let scanner = CodexSessionScanner(
+        roots: [directory],
+        fileRecencyLimit: 26 * 60 * 60
+    )
+    _ = scanner.scan(at: now)
+    let later = now.addingTimeInterval(181)
+    let live = scanner.snapshot(at: later, fileRecencyLimit: 3 * 60)
+    let rolling = scanner.snapshot(at: later, fileRecencyLimit: 26 * 60 * 60)
+
+    #expect(live.agents.isEmpty)
+    #expect(rolling.agents.count == 1)
+    #expect(scanner.statistics.inventoryPasses == 1)
+}
+
+@Test
+func scannerEvictsDeletedCodexFileWithoutAnotherInventory() throws {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("TokPulseCodexDeletionTests-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let file = directory.appendingPathComponent("deleted.jsonl")
+    try fileManager.copyItem(at: fixtureURL("active-answering.jsonl"), to: file)
+    let scanner = CodexSessionScanner(roots: [directory], fileRecencyLimit: nil)
+    #expect(scanner.scan().agents.count == 1)
+
+    try fileManager.removeItem(at: file)
+    #expect(scanner.refresh(changedFiles: [file]).agents.isEmpty)
+    #expect(scanner.statistics.inventoryPasses == 1)
+}
+
 private func scanFixture(_ name: String) -> SessionScanResult {
     CodexSessionScanner(roots: [fixtureURL(name)], fileRecencyLimit: nil).scan()
 }
@@ -94,4 +224,11 @@ private func date(_ value: String) -> Date {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter.date(from: value)!
+}
+
+private func append(_ data: Data, to file: URL) throws {
+    let handle = try FileHandle(forWritingTo: file)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: data)
+    try handle.close()
 }

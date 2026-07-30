@@ -31,6 +31,8 @@ public final class QoderSessionScanner: @unchecked Sendable {
 
     private let lock = NSLock()
     private var cache: [String: CachedFile] = [:]
+    private var inventoryDiagnostics: [SessionDiagnostic] = []
+    private var scanStatistics = SessionScannerStatistics()
 
     public init(
         cliRoots: [URL] = QoderSessionScanner.defaultCLIRoots,
@@ -50,55 +52,161 @@ public final class QoderSessionScanner: @unchecked Sendable {
         var files: [(url: URL, format: QoderFileFormat)] = []
         files += inventoryFiles(in: cliRoots, format: .cli, diagnostics: &diagnostics)
         files += inventoryFiles(in: questRoots, format: .quest, diagnostics: &diagnostics)
-
-        var parsedFiles: [(fingerprint: FileFingerprint, parsed: ParsedQoderFile)] = []
-        var retainedCachePaths = Set<String>()
+        inventoryDiagnostics = diagnostics
+        scanStatistics.inventoryPasses += 1
+        let inventoryPaths = Set(files.map { $0.url.standardizedFileURL.path })
 
         for (file, format) in files {
+            refreshFile(file, format: format, at: now)
+        }
+        cache = cache.filter { inventoryPaths.contains($0.key) }
+        return assembleResult(at: now, recencyLimit: fileRecencyLimit)
+    }
+
+    /// Refreshes changed Qoder JSONL files without recursively enumerating roots.
+    public func refresh(
+        changedFiles: [URL],
+        at now: Date = Date()
+    ) -> SessionScanResult {
+        lock.lock()
+        defer { lock.unlock() }
+        for file in changedFiles where file.pathExtension.lowercased() == "jsonl" {
             let path = file.standardizedFileURL.path
-            guard let fingerprint = fileFingerprint(file) else {
-                diagnostics.append(
-                    SessionDiagnostic(
-                        code: .fileMetadataUnavailable,
-                        filePath: file.path,
-                        line: nil,
-                        message: "Could not read file size or modification date."
-                    )
+            guard let format = cache[path]?.format ?? format(for: file) else {
+                continue
+            }
+            refreshFile(file, format: format, at: now)
+        }
+        return assembleResult(at: now, recencyLimit: fileRecencyLimit)
+    }
+
+    public func snapshot(
+        at now: Date = Date(),
+        fileRecencyLimit: TimeInterval?
+    ) -> SessionScanResult {
+        lock.lock()
+        defer { lock.unlock() }
+        return assembleResult(at: now, recencyLimit: fileRecencyLimit)
+    }
+
+    public var statistics: SessionScannerStatistics {
+        lock.lock()
+        defer { lock.unlock() }
+        return scanStatistics
+    }
+
+    public func clearCache() {
+        lock.lock()
+        cache.removeAll()
+        inventoryDiagnostics.removeAll()
+        scanStatistics = SessionScannerStatistics()
+        lock.unlock()
+    }
+
+    private func refreshFile(_ file: URL, format: QoderFileFormat, at now: Date) {
+        let path = file.standardizedFileURL.path
+        guard FileManager.default.fileExists(atPath: path) else {
+            cache.removeValue(forKey: path)
+            return
+        }
+        guard let metadata = sessionFileMetadata(file) else {
+            inventoryDiagnostics.append(
+                SessionDiagnostic(
+                    code: .fileMetadataUnavailable,
+                    filePath: file.path,
+                    line: nil,
+                    message: "Could not read file size or modification date."
                 )
-                continue
-            }
-
-            if let fileRecencyLimit,
-               fingerprint.modifiedAt < now.addingTimeInterval(-fileRecencyLimit)
-            {
-                continue
-            }
-
-            retainedCachePaths.insert(path)
-            let parsed: ParsedQoderFile
-            if let cached = cache[path], cached.fingerprint == fingerprint {
-                parsed = cached.parsed
-            } else {
-                parsed = QoderFileParser(file: file, format: format).parse()
-                cache[path] = CachedFile(fingerprint: fingerprint, parsed: parsed)
-            }
-            parsedFiles.append((fingerprint, parsed))
+            )
+            return
+        }
+        if cache[path] == nil,
+           let fileRecencyLimit,
+           metadata.modifiedAt < now.addingTimeInterval(-fileRecencyLimit)
+        {
+            return
         }
 
-        cache = cache.filter { retainedCachePaths.contains($0.key) }
+        if var cached = cache[path] {
+            let needsReset = cached.metadata.identity != metadata.identity
+                || metadata.size < cached.metadata.size
+                || (
+                    metadata.size == cached.metadata.size
+                        && metadata.modifiedAt != cached.metadata.modifiedAt
+                )
+            if needsReset {
+                scanStatistics.parserResets += 1
+                cache[path] = parseNewFile(
+                    file,
+                    format: format,
+                    metadata: metadata,
+                    at: now
+                )
+            } else if metadata.size > cached.metadata.size {
+                scanStatistics.bytesRead += cached.parser.readAppended()
+                prune(cached.parser, at: now)
+                cached.metadata = metadata
+                cached.parsed = cached.parser.snapshot()
+                cache[path] = cached
+            }
+            return
+        }
+        cache[path] = parseNewFile(
+            file,
+            format: format,
+            metadata: metadata,
+            at: now
+        )
+    }
 
-        var newestByAgentID: [String: (FileFingerprint, ParsedQoderFile)] = [:]
+    private func parseNewFile(
+        _ file: URL,
+        format: QoderFileFormat,
+        metadata: SessionFileMetadata,
+        at now: Date
+    ) -> CachedFile {
+        let parser = QoderFileParser(file: file, format: format)
+        scanStatistics.bytesRead += parser.readAppended()
+        prune(parser, at: now)
+        return CachedFile(
+            metadata: metadata,
+            format: format,
+            parser: parser,
+            parsed: parser.snapshot()
+        )
+    }
+
+    private func prune(_ parser: QoderFileParser, at now: Date) {
+        guard let fileRecencyLimit else {
+            return
+        }
+        parser.pruneSamples(endingBefore: now.addingTimeInterval(-fileRecencyLimit))
+    }
+
+    private func assembleResult(
+        at now: Date,
+        recencyLimit: TimeInterval?
+    ) -> SessionScanResult {
+        var diagnostics = inventoryDiagnostics
+        let parsedFiles = cache.values.filter { cached in
+            guard let recencyLimit else {
+                return true
+            }
+            return cached.metadata.modifiedAt >= now.addingTimeInterval(-recencyLimit)
+        }
+
+        var newestByAgentID: [String: (SessionFileMetadata, ParsedQoderFile)] = [:]
         for entry in parsedFiles {
             diagnostics.append(contentsOf: entry.parsed.diagnostics)
             guard let agentID = entry.parsed.agent?.id else {
                 continue
             }
             if let current = newestByAgentID[agentID],
-               current.0.modifiedAt >= entry.fingerprint.modifiedAt
+               current.0.modifiedAt >= entry.metadata.modifiedAt
             {
                 continue
             }
-            newestByAgentID[agentID] = entry
+            newestByAgentID[agentID] = (entry.metadata, entry.parsed)
         }
 
         let selected = newestByAgentID.values.map(\.1)
@@ -108,12 +216,18 @@ public final class QoderSessionScanner: @unchecked Sendable {
             }
             return lhs.id < rhs.id
         }
-        let samples = selected.flatMap(\.samples).sorted { lhs, rhs in
-            if lhs.startedAt != rhs.startedAt {
-                return lhs.startedAt < rhs.startedAt
+        let sampleCutoff = recencyLimit.map { now.addingTimeInterval(-$0) }
+        let samples = selected
+            .flatMap(\.samples)
+            .filter { sample in
+                sampleCutoff.map { cutoff in cutoff <= sample.endedAt } ?? true
             }
-            return lhs.id < rhs.id
-        }
+            .sorted { lhs, rhs in
+                if lhs.startedAt != rhs.startedAt {
+                    return lhs.startedAt < rhs.startedAt
+                }
+                return lhs.id < rhs.id
+            }
         let activities = selected.compactMap(\.activity).sorted { $0.agentID < $1.agentID }
         diagnostics.sort { lhs, rhs in
             if lhs.filePath != rhs.filePath {
@@ -134,10 +248,22 @@ public final class QoderSessionScanner: @unchecked Sendable {
         )
     }
 
-    public func clearCache() {
-        lock.lock()
-        cache.removeAll()
-        lock.unlock()
+    private func format(for file: URL) -> QoderFileFormat? {
+        if contains(file, in: cliRoots) {
+            return .cli
+        }
+        if contains(file, in: questRoots) {
+            return .quest
+        }
+        return nil
+    }
+
+    private func contains(_ file: URL, in roots: [URL]) -> Bool {
+        let path = file.standardizedFileURL.path
+        return roots.contains { root in
+            let rootPath = root.standardizedFileURL.path
+            return path == rootPath || path.hasPrefix(rootPath + "/")
+        }
     }
 
     private func inventoryFiles(
@@ -198,17 +324,6 @@ public final class QoderSessionScanner: @unchecked Sendable {
             .sorted { $0.path < $1.path }
             .map { ($0, format) }
     }
-
-    private func fileFingerprint(_ file: URL) -> FileFingerprint? {
-        guard let values = try? file.resourceValues(
-            forKeys: [.contentModificationDateKey, .fileSizeKey]
-        ), let modifiedAt = values.contentModificationDate,
-              let size = values.fileSize
-        else {
-            return nil
-        }
-        return FileFingerprint(modifiedAt: modifiedAt, size: Int64(size))
-    }
 }
 
 public enum QoderFileFormat: String, Sendable {
@@ -216,14 +331,11 @@ public enum QoderFileFormat: String, Sendable {
     case quest
 }
 
-private struct FileFingerprint: Equatable {
-    let modifiedAt: Date
-    let size: Int64
-}
-
 private struct CachedFile {
-    let fingerprint: FileFingerprint
-    let parsed: ParsedQoderFile
+    var metadata: SessionFileMetadata
+    let format: QoderFileFormat
+    let parser: QoderFileParser
+    var parsed: ParsedQoderFile
 }
 
 private struct ParsedQoderFile {
@@ -264,6 +376,7 @@ private struct ResponseGroup {
 private final class QoderFileParser {
     private let file: URL
     private let format: QoderFileFormat
+    private let reader: IncrementalJSONLReader
     private let fractionalDateFormatter: ISO8601DateFormatter
     private let wholeSecondDateFormatter: ISO8601DateFormatter
 
@@ -284,15 +397,16 @@ private final class QoderFileParser {
     init(file: URL, format: QoderFileFormat) {
         self.file = file
         self.format = format
+        reader = IncrementalJSONLReader(file: file)
         fractionalDateFormatter = ISO8601DateFormatter()
         fractionalDateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         wholeSecondDateFormatter = ISO8601DateFormatter()
         wholeSecondDateFormatter.formatOptions = [.withInternetDateTime]
     }
 
-    func parse() -> ParsedQoderFile {
+    func readAppended() -> Int64 {
         do {
-            try enumerateCompleteLines { [self] data, lineNumber in
+            return try reader.readAppended { [self] data, lineNumber in
                 guard let record = try? JSONSerialization.jsonObject(with: data),
                       let dictionary = record as? [String: Any]
                 else {
@@ -322,15 +436,23 @@ private final class QoderFileParser {
                     message: "Could not read JSONL file."
                 )
             )
+            return 0
         }
+    }
 
+    func snapshot() -> ParsedQoderFile {
+        var snapshot = result
         switch format {
         case .cli:
-            finishCLI()
+            finishCLI(into: &snapshot)
         case .quest:
-            finishQuest()
+            finishQuest(into: &snapshot)
         }
-        return result
+        return snapshot
+    }
+
+    func pruneSamples(endingBefore cutoff: Date) {
+        result.samples.removeAll { $0.endedAt < cutoff }
     }
 
     // MARK: - Qoder CLI format
@@ -410,9 +532,9 @@ private final class QoderFileParser {
         )
     }
 
-    private func finishCLI() {
+    private func finishCLI(into snapshot: inout ParsedQoderFile) {
         guard let sessionID else {
-            result.diagnostics.append(
+            snapshot.diagnostics.append(
                 SessionDiagnostic(
                     code: .missingSessionMetadata,
                     filePath: file.path,
@@ -433,6 +555,7 @@ private final class QoderFileParser {
         }
 
         finish(
+            into: &snapshot,
             agentID: agentID,
             sessionID: sessionID,
             parentAgentID: isSubagent ? sessionID : nil,
@@ -495,9 +618,9 @@ private final class QoderFileParser {
         )
     }
 
-    private func finishQuest() {
+    private func finishQuest(into snapshot: inout ParsedQoderFile) {
         guard let sessionID = sessionID ?? questSessionIDFromFileName() else {
-            result.diagnostics.append(
+            snapshot.diagnostics.append(
                 SessionDiagnostic(
                     code: .missingSessionMetadata,
                     filePath: file.path,
@@ -510,6 +633,7 @@ private final class QoderFileParser {
 
         let companion = readQuestCompanion()
         finish(
+            into: &snapshot,
             agentID: sessionID,
             sessionID: sessionID,
             parentAgentID: nil,
@@ -577,28 +701,37 @@ private final class QoderFileParser {
     }
 
     private func appendSample(for group: ResponseGroup) {
-        guard group.endedAt > group.startedAt, group.estimate.outputTokens > 0 else {
+        guard let sample = makeSample(for: group, ordinal: sampleOrdinal + 1) else {
             return
         }
         sampleOrdinal += 1
-        result.samples.append(
-            GenerationSample(
-                id: "\(file.lastPathComponent):\(sampleOrdinal)",
-                agentID: "",
-                startedAt: group.startedAt,
-                endedAt: group.endedAt,
-                outputTokens: group.estimate.outputTokens,
-                reasoningTokens: min(
-                    group.estimate.outputTokens,
-                    group.estimate.reasoningTokens
-                ),
-                tokenQuality: .estimated,
-                timingQuality: .inferred
-            )
+        result.samples.append(sample)
+    }
+
+    private func makeSample(
+        for group: ResponseGroup,
+        ordinal: Int
+    ) -> GenerationSample? {
+        guard group.endedAt > group.startedAt, group.estimate.outputTokens > 0 else {
+            return nil
+        }
+        return GenerationSample(
+            id: "\(file.lastPathComponent):\(ordinal)",
+            agentID: "",
+            startedAt: group.startedAt,
+            endedAt: group.endedAt,
+            outputTokens: group.estimate.outputTokens,
+            reasoningTokens: min(
+                group.estimate.outputTokens,
+                group.estimate.reasoningTokens
+            ),
+            tokenQuality: .estimated,
+            timingQuality: .inferred
         )
     }
 
     private func finish(
+        into snapshot: inout ParsedQoderFile,
         agentID: String,
         sessionID: String,
         parentAgentID: String?,
@@ -608,10 +741,7 @@ private final class QoderFileParser {
         model: String?,
         workingDirectory: String?
     ) {
-        let finalGroup = group
-        flushGroup()
-
-        result.agent = AgentDescriptor(
+        snapshot.agent = AgentDescriptor(
             id: agentID,
             sessionID: sessionID,
             parentAgentID: parentAgentID,
@@ -622,7 +752,14 @@ private final class QoderFileParser {
             workingDirectory: workingDirectory,
             startedAt: firstTimestamp ?? .distantPast
         )
-        result.samples = result.samples.map { sample in
+        var samples = result.samples
+        if let group,
+           group.isComplete,
+           let provisional = makeSample(for: group, ordinal: sampleOrdinal + 1)
+        {
+            samples.append(provisional)
+        }
+        snapshot.samples = samples.map { sample in
             GenerationSample(
                 id: "\(agentID):\(sample.id)",
                 agentID: agentID,
@@ -637,58 +774,25 @@ private final class QoderFileParser {
 
         let state: AgentActivityState
         let since: Date?
-        if let finalGroup, !finalGroup.isComplete {
+        if let group, !group.isComplete {
             state = .answering
-            since = finalGroup.startedAt
-        } else if let finalGroup, finalGroup.hasOutstandingToolCall {
+            since = group.startedAt
+        } else if let group, group.hasOutstandingToolCall {
             state = .waitingOnTool
-            since = finalGroup.endedAt
+            since = group.endedAt
         } else if let pendingInputAt {
             state = .answering
             since = pendingInputAt
         } else {
             state = .idle
-            since = finalGroup?.endedAt ?? firstTimestamp
+            since = group?.endedAt ?? firstTimestamp
         }
-        result.activity = AgentActivity(
+        snapshot.activity = AgentActivity(
             agentID: agentID,
             turnID: nil,
             state: state,
             since: since
         )
-    }
-
-    private func enumerateCompleteLines(
-        _ body: (Data, Int) throws -> Void
-    ) throws {
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
-
-        var buffer = Data()
-        var lineNumber = 0
-        while let chunk = try handle.read(upToCount: 64 * 1_024), !chunk.isEmpty {
-            buffer.append(chunk)
-            var consumed = buffer.startIndex
-            while let newline = buffer[consumed...].firstIndex(of: 0x0A) {
-                var end = newline
-                if end > consumed, buffer[buffer.index(before: end)] == 0x0D {
-                    end = buffer.index(before: end)
-                }
-                lineNumber += 1
-                if end > consumed {
-                    try body(Data(buffer[consumed..<end]), lineNumber)
-                }
-                consumed = buffer.index(after: newline)
-                if consumed == buffer.endIndex {
-                    break
-                }
-            }
-            if consumed > buffer.startIndex {
-                buffer.removeSubrange(buffer.startIndex..<consumed)
-            }
-        }
-        // A writer may be in the middle of appending the final JSON object.
-        // Ignore an unterminated tail and retry it after the mtime/size changes.
     }
 
     private func parseDate(_ value: String) -> Date? {

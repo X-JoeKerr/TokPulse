@@ -63,3 +63,11 @@ public struct SessionScanResult: Hashable, Sendable {
         )
     }
 }
+
+public struct SessionScannerStatistics: Hashable, Sendable {
+    public internal(set) var bytesRead: Int64 = 0
+    public internal(set) var inventoryPasses = 0
+    public internal(set) var parserResets = 0
+
+    public init() {}
+}

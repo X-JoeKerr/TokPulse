@@ -2,9 +2,8 @@ import Foundation
 
 /// Reads Codex rollout JSONL without retaining prompts, messages, or tool output.
 ///
-/// A scanner instance caches complete per-file parse results by modification date
-/// and size. It intentionally does not watch the filesystem; callers can rescan on
-/// a modest timer and unchanged files are cheap.
+/// A scanner instance keeps parser state per file so changed files only consume
+/// complete JSONL records appended since the previous refresh.
 public final class CodexSessionScanner: @unchecked Sendable {
     public static let defaultFileRecencyLimit: TimeInterval = 3 * 60
 
@@ -22,6 +21,8 @@ public final class CodexSessionScanner: @unchecked Sendable {
 
     private let lock = NSLock()
     private var cache: [String: CachedFile] = [:]
+    private var inventoryDiagnostics: [SessionDiagnostic] = []
+    private var scanStatistics = SessionScannerStatistics()
 
     /// - Parameters:
     ///   - roots: JSONL files or directories containing Codex rollout files.
@@ -42,62 +43,155 @@ public final class CodexSessionScanner: @unchecked Sendable {
         defer { lock.unlock() }
 
         let inventory = inventoryFiles()
-        var diagnostics = inventory.diagnostics
-        var parsedFiles: [(fingerprint: FileFingerprint, parsed: ParsedSessionFile)] = []
-        var retainedCachePaths = Set<String>()
+        inventoryDiagnostics = inventory.diagnostics
+        scanStatistics.inventoryPasses += 1
+        let inventoryPaths = Set(inventory.files.map { $0.standardizedFileURL.path })
 
         for file in inventory.files {
-            let path = file.standardizedFileURL.path
-            guard let fingerprint = fileFingerprint(file) else {
-                diagnostics.append(
-                    diagnostic(
-                        .fileMetadataUnavailable,
-                        file: file,
-                        message: "Could not read file size or modification date."
-                    )
+            refreshFile(file, at: now)
+        }
+        cache = cache.filter { inventoryPaths.contains($0.key) }
+        return assembleResult(at: now, recencyLimit: fileRecencyLimit)
+    }
+
+    /// Refreshes known state without recursively enumerating the configured roots.
+    /// Missing files are evicted; unchanged files perform no I/O.
+    public func refresh(
+        changedFiles: [URL],
+        at now: Date = Date()
+    ) -> SessionScanResult {
+        lock.lock()
+        defer { lock.unlock() }
+        for file in changedFiles where file.pathExtension.lowercased() == "jsonl" {
+            refreshFile(file, at: now)
+        }
+        return assembleResult(at: now, recencyLimit: fileRecencyLimit)
+    }
+
+    public func snapshot(
+        at now: Date = Date(),
+        fileRecencyLimit: TimeInterval?
+    ) -> SessionScanResult {
+        lock.lock()
+        defer { lock.unlock() }
+        return assembleResult(at: now, recencyLimit: fileRecencyLimit)
+    }
+
+    public var statistics: SessionScannerStatistics {
+        lock.lock()
+        defer { lock.unlock() }
+        return scanStatistics
+    }
+
+    public func clearCache() {
+        lock.lock()
+        cache.removeAll()
+        inventoryDiagnostics.removeAll()
+        scanStatistics = SessionScannerStatistics()
+        lock.unlock()
+    }
+
+    private func refreshFile(_ file: URL, at now: Date) {
+        let path = file.standardizedFileURL.path
+        guard FileManager.default.fileExists(atPath: path) else {
+            cache.removeValue(forKey: path)
+            return
+        }
+        guard let metadata = sessionFileMetadata(file) else {
+            inventoryDiagnostics.append(
+                diagnostic(
+                    .fileMetadataUnavailable,
+                    file: file,
+                    message: "Could not read file size or modification date."
                 )
-                continue
-            }
-
-            if let fileRecencyLimit,
-               fingerprint.modifiedAt < now.addingTimeInterval(-fileRecencyLimit)
-            {
-                continue
-            }
-
-            retainedCachePaths.insert(path)
-            let parsed: ParsedSessionFile
-            if let cached = cache[path], cached.fingerprint == fingerprint {
-                parsed = cached.parsed
-            } else {
-                parsed = SessionFileParser(file: file).parse()
-                cache[path] = CachedFile(fingerprint: fingerprint, parsed: parsed)
-            }
-            parsedFiles.append((fingerprint, parsed))
+            )
+            return
+        }
+        if cache[path] == nil,
+           let fileRecencyLimit,
+           metadata.modifiedAt < now.addingTimeInterval(-fileRecencyLimit)
+        {
+            return
         }
 
-        cache = cache.filter { retainedCachePaths.contains($0.key) }
+        if var cached = cache[path] {
+            let needsReset = cached.metadata.identity != metadata.identity
+                || metadata.size < cached.metadata.size
+                || (
+                    metadata.size == cached.metadata.size
+                        && metadata.modifiedAt != cached.metadata.modifiedAt
+                )
+            if needsReset {
+                scanStatistics.parserResets += 1
+                cache[path] = parseNewFile(file, metadata: metadata, at: now)
+            } else if metadata.size > cached.metadata.size {
+                scanStatistics.bytesRead += cached.parser.readAppended()
+                prune(cached.parser, at: now)
+                cached.metadata = metadata
+                cached.parsed = cached.parser.snapshot()
+                cache[path] = cached
+            }
+            return
+        }
+        cache[path] = parseNewFile(file, metadata: metadata, at: now)
+    }
+
+    private func parseNewFile(
+        _ file: URL,
+        metadata: SessionFileMetadata,
+        at now: Date
+    ) -> CachedFile {
+        let parser = SessionFileParser(file: file)
+        scanStatistics.bytesRead += parser.readAppended()
+        prune(parser, at: now)
+        return CachedFile(metadata: metadata, parser: parser, parsed: parser.snapshot())
+    }
+
+    private func prune(_ parser: SessionFileParser, at now: Date) {
+        guard let fileRecencyLimit else {
+            return
+        }
+        parser.pruneSamples(endingBefore: now.addingTimeInterval(-fileRecencyLimit))
+    }
+
+    private func assembleResult(
+        at now: Date,
+        recencyLimit: TimeInterval?
+    ) -> SessionScanResult {
+        var diagnostics = inventoryDiagnostics
+        let parsedFiles = cache.values.filter { cached in
+            guard let recencyLimit else {
+                return true
+            }
+            return cached.metadata.modifiedAt >= now.addingTimeInterval(-recencyLimit)
+        }
 
         // A rollout may briefly exist in both active and archived roots. Prefer
         // the newest copy instead of emitting the same agent and samples twice.
-        var newestByAgentID: [String: (FileFingerprint, ParsedSessionFile)] = [:]
+        var newestByAgentID: [String: (SessionFileMetadata, ParsedSessionFile)] = [:]
         for entry in parsedFiles {
             diagnostics.append(contentsOf: entry.parsed.diagnostics)
             guard let agentID = entry.parsed.agent?.id else {
                 continue
             }
             if let current = newestByAgentID[agentID],
-               current.0.modifiedAt >= entry.fingerprint.modifiedAt
+               current.0.modifiedAt >= entry.metadata.modifiedAt
             {
                 continue
             }
-            newestByAgentID[agentID] = entry
+            newestByAgentID[agentID] = (entry.metadata, entry.parsed)
         }
 
         let selected = newestByAgentID.values.map(\.1)
         let agents = selected.compactMap(\.agent).sorted(by: agentSort)
+        let sampleCutoff = recencyLimit.map { now.addingTimeInterval(-$0) }
         let samples = Dictionary(
-            selected.flatMap(\.samples).map { ($0.id, $0) },
+            selected
+                .flatMap(\.samples)
+                .filter { sample in
+                    sampleCutoff.map { cutoff in cutoff <= sample.endedAt } ?? true
+                }
+                .map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         .values
@@ -112,12 +206,6 @@ public final class CodexSessionScanner: @unchecked Sendable {
             activities: activities,
             diagnostics: diagnostics
         )
-    }
-
-    public func clearCache() {
-        lock.lock()
-        cache.removeAll()
-        lock.unlock()
     }
 
     private func inventoryFiles() -> (files: [URL], diagnostics: [SessionDiagnostic]) {
@@ -172,26 +260,12 @@ public final class CodexSessionScanner: @unchecked Sendable {
         return (filesByPath.values.sorted { $0.path < $1.path }, diagnostics)
     }
 
-    private func fileFingerprint(_ file: URL) -> FileFingerprint? {
-        guard let values = try? file.resourceValues(
-            forKeys: [.contentModificationDateKey, .fileSizeKey]
-        ), let modifiedAt = values.contentModificationDate,
-              let size = values.fileSize
-        else {
-            return nil
-        }
-        return FileFingerprint(modifiedAt: modifiedAt, size: Int64(size))
-    }
-}
-
-private struct FileFingerprint: Equatable {
-    let modifiedAt: Date
-    let size: Int64
 }
 
 private struct CachedFile {
-    let fingerprint: FileFingerprint
-    let parsed: ParsedSessionFile
+    var metadata: SessionFileMetadata
+    let parser: SessionFileParser
+    var parsed: ParsedSessionFile
 }
 
 private struct ParsedSessionFile {
@@ -239,6 +313,7 @@ private struct ModelGroup {
 
 private final class SessionFileParser {
     private let file: URL
+    private let reader: IncrementalJSONLReader
     private let decoder: JSONDecoder
     private let fractionalDateFormatter: ISO8601DateFormatter
     private let wholeSecondDateFormatter: ISO8601DateFormatter
@@ -254,6 +329,7 @@ private final class SessionFileParser {
 
     init(file: URL) {
         self.file = file
+        reader = IncrementalJSONLReader(file: file)
         decoder = JSONDecoder()
         fractionalDateFormatter = ISO8601DateFormatter()
         fractionalDateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -261,9 +337,9 @@ private final class SessionFileParser {
         wholeSecondDateFormatter.formatOptions = [.withInternetDateTime]
     }
 
-    func parse() -> ParsedSessionFile {
+    func readAppended() -> Int64 {
         do {
-            try enumerateCompleteLines { [self] data, lineNumber in
+            return try reader.readAppended { [self] data, lineNumber in
                 do {
                     let record = try decoder.decode(CodexRecord.self, from: data)
                     consume(record, lineNumber: lineNumber)
@@ -286,17 +362,21 @@ private final class SessionFileParser {
                     message: "Could not read JSONL file."
                 )
             )
+            return 0
         }
+    }
 
+    func snapshot() -> ParsedSessionFile {
+        var snapshot = result
         guard let metadata else {
-            result.diagnostics.append(
+            snapshot.diagnostics.append(
                 diagnostic(
                     .missingSessionMetadata,
                     file: file,
                     message: "The first session_meta record was not available."
                 )
             )
-            return result
+            return snapshot
         }
 
         let name: String
@@ -310,7 +390,7 @@ private final class SessionFileParser {
             name = metadata.isSubagent ? "Subagent" : "Main agent"
         }
 
-        result.agent = AgentDescriptor(
+        snapshot.agent = AgentDescriptor(
             id: metadata.id,
             sessionID: metadata.sessionID,
             parentAgentID: metadata.parentThreadID,
@@ -327,7 +407,7 @@ private final class SessionFileParser {
             if let group = activeTurn.group, !group.outstandingCalls.isEmpty {
                 state = .waitingOnTool
                 since = group.outstandingCalls.values.max()
-                result.diagnostics.append(
+                snapshot.diagnostics.append(
                     diagnostic(
                         .unresolvedToolCalls,
                         file: file,
@@ -340,14 +420,14 @@ private final class SessionFileParser {
                     ?? activeTurn.group?.lastToolOutputAt
                     ?? activeTurn.inputReadyAt
             }
-            result.activity = AgentActivity(
+            snapshot.activity = AgentActivity(
                 agentID: metadata.id,
                 turnID: activeTurn.id,
                 state: state,
                 since: since
             )
         } else {
-            result.activity = AgentActivity(
+            snapshot.activity = AgentActivity(
                 agentID: metadata.id,
                 turnID: nil,
                 state: lastActivity,
@@ -355,7 +435,11 @@ private final class SessionFileParser {
             )
         }
 
-        return result
+        return snapshot
+    }
+
+    func pruneSamples(endingBefore cutoff: Date) {
+        result.samples.removeAll { $0.endedAt < cutoff }
     }
 
     private func consume(_ record: CodexRecord, lineNumber: Int) {
@@ -753,39 +837,6 @@ private final class SessionFileParser {
         }
         turn.group = nil
         activeTurn = turn
-    }
-
-    private func enumerateCompleteLines(
-        _ body: (Data, Int) throws -> Void
-    ) throws {
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
-
-        var buffer = Data()
-        var lineNumber = 0
-        while let chunk = try handle.read(upToCount: 64 * 1_024), !chunk.isEmpty {
-            buffer.append(chunk)
-            var consumed = buffer.startIndex
-            while let newline = buffer[consumed...].firstIndex(of: 0x0A) {
-                var end = newline
-                if end > consumed, buffer[buffer.index(before: end)] == 0x0D {
-                    end = buffer.index(before: end)
-                }
-                lineNumber += 1
-                if end > consumed {
-                    try body(Data(buffer[consumed..<end]), lineNumber)
-                }
-                consumed = buffer.index(after: newline)
-                if consumed == buffer.endIndex {
-                    break
-                }
-            }
-            if consumed > buffer.startIndex {
-                buffer.removeSubrange(buffer.startIndex..<consumed)
-            }
-        }
-        // A writer may be in the middle of appending the final JSON object.
-        // Ignore an unterminated tail and retry it after the mtime/size changes.
     }
 
     private func parseDate(_ value: String) -> Date? {

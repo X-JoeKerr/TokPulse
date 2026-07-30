@@ -10,10 +10,7 @@ final class SessionMonitor: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var diagnosticCount = 0
 
-    private let codexScanner: CodexSessionScanner
-    private let qoderScanner: QoderSessionScanner
-    private let dailyCodexScanner: CodexSessionScanner
-    private let dailyQoderScanner: QoderSessionScanner
+    private let telemetryStore: SessionTelemetryStore
     private let engine: MetricEngine
     private let dailyEngine: DailyMetricEngine
     private let refreshInterval: Duration
@@ -22,24 +19,13 @@ final class SessionMonitor: ObservableObject {
     private var lastDailyRefreshAt: Date?
 
     init(
-        codexScanner: CodexSessionScanner = CodexSessionScanner(),
-        qoderScanner: QoderSessionScanner = QoderSessionScanner(),
-        // Covers the longest local calendar day plus activity crossing midnight.
-        dailyCodexScanner: CodexSessionScanner = CodexSessionScanner(
-            fileRecencyLimit: 26 * 60 * 60
-        ),
-        dailyQoderScanner: QoderSessionScanner = QoderSessionScanner(
-            fileRecencyLimit: 26 * 60 * 60
-        ),
+        telemetryStore: SessionTelemetryStore = SessionTelemetryStore(),
         engine: MetricEngine = MetricEngine(),
         dailyEngine: DailyMetricEngine = DailyMetricEngine(),
         refreshInterval: Duration = .seconds(2),
         dailyRefreshInterval: TimeInterval = 60
     ) {
-        self.codexScanner = codexScanner
-        self.qoderScanner = qoderScanner
-        self.dailyCodexScanner = dailyCodexScanner
-        self.dailyQoderScanner = dailyQoderScanner
+        self.telemetryStore = telemetryStore
         self.engine = engine
         self.dailyEngine = dailyEngine
         self.refreshInterval = refreshInterval
@@ -76,10 +62,7 @@ final class SessionMonitor: ObservableObject {
         guard !isRefreshing else { return }
         isRefreshing = true
 
-        let codexScanner = self.codexScanner
-        let qoderScanner = self.qoderScanner
-        let dailyCodexScanner = self.dailyCodexScanner
-        let dailyQoderScanner = self.dailyQoderScanner
+        let telemetryStore = self.telemetryStore
         let engine = self.engine
         let dailyEngine = self.dailyEngine
         let now = Date()
@@ -87,25 +70,26 @@ final class SessionMonitor: ObservableObject {
             now.timeIntervalSince($0) >= dailyRefreshInterval
         } ?? true
         let output = await Task.detached(priority: .utility) {
-            let scan = SessionScanResult.merged(
-                generatedAt: now,
-                [codexScanner.scan(at: now), qoderScanner.scan(at: now)]
+            let telemetry = telemetryStore.refresh(
+                at: now,
+                includeRolling: shouldRefreshDaily
             )
-            let metrics = engine.calculate(at: now, agents: scan.agents, samples: scan.samples)
-            guard shouldRefreshDaily else {
-                return (scan, metrics, nil as DailyMetrics?)
+            let live = telemetry.live
+            let metrics = engine.calculate(
+                at: now,
+                agents: live.agents,
+                samples: live.samples
+            )
+            guard shouldRefreshDaily, let rolling = telemetry.rolling else {
+                return (live, metrics, nil as DailyMetrics?)
             }
 
-            let dailyScan = SessionScanResult.merged(
-                generatedAt: now,
-                [dailyCodexScanner.scan(at: now), dailyQoderScanner.scan(at: now)]
-            )
             let dailyMetrics = dailyEngine.calculate(
                 at: now,
-                samples: dailyScan.samples,
-                activities: scan.activities
+                samples: rolling.samples,
+                activities: live.activities
             )
-            return (scan, metrics, dailyMetrics)
+            return (live, metrics, dailyMetrics)
         }.value
 
         guard !Task.isCancelled else {

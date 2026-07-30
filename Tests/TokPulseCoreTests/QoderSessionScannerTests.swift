@@ -154,6 +154,66 @@ func qoderScannerDefaultInventoryExpiresFilesAfterThreeMinutes() throws {
     #expect(result.agents.map(\.id) == ["s-main"])
 }
 
+@Test
+func qoderScannerReadsOnlyAppendedBytesAndMatchesAColdParse() throws {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("TokPulseQoderAppendParityTests-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let source = try Data(contentsOf: qoderFixtureURL("qoder-cli-main.jsonl"))
+    let split = source.index(after: source[..<(source.count / 2)].lastIndex(of: 0x0A)!)
+    let file = directory.appendingPathComponent("qoder-cli-main.jsonl")
+    try Data(source[..<split]).write(to: file)
+
+    let scanner = QoderSessionScanner(
+        cliRoots: [directory],
+        questRoots: [],
+        fileRecencyLimit: nil
+    )
+    _ = scanner.scan()
+    try appendQoderData(Data(source[split...]), to: file)
+    let incremental = scanner.refresh(changedFiles: [file])
+    let cold = scanQoderCLIFixture("qoder-cli-main.jsonl")
+
+    #expect(incremental.agents == cold.agents)
+    #expect(incremental.samples == cold.samples)
+    #expect(incremental.activities == cold.activities)
+    #expect(incremental.diagnostics.map(\.code) == cold.diagnostics.map(\.code))
+    #expect(scanner.statistics.bytesRead == Int64(source.count))
+    #expect(scanner.statistics.inventoryPasses == 1)
+}
+
+@Test
+func qoderScannerResetsParserAfterTruncation() throws {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("TokPulseQoderTruncationTests-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let original = try Data(contentsOf: qoderFixtureURL("qoder-cli-main.jsonl"))
+    let replacement = try Data(contentsOf: qoderFixtureURL("qoder-cli-subagent.jsonl"))
+    let file = directory.appendingPathComponent("reused.jsonl")
+    try original.write(to: file)
+    let scanner = QoderSessionScanner(
+        cliRoots: [directory],
+        questRoots: [],
+        fileRecencyLimit: nil
+    )
+    _ = scanner.scan()
+
+    let handle = try FileHandle(forWritingTo: file)
+    try handle.truncate(atOffset: 0)
+    try handle.write(contentsOf: replacement)
+    try handle.close()
+
+    let refreshed = scanner.refresh(changedFiles: [file])
+    #expect(refreshed.agents.map(\.id) == ["aExplore-abc123"])
+    #expect(scanner.statistics.parserResets == 1)
+}
+
 private func scanQoderCLIFixture(_ name: String) -> SessionScanResult {
     QoderSessionScanner(
         cliRoots: [qoderFixtureURL(name)],
@@ -181,4 +241,11 @@ private func isoDate(_ value: String) -> Date {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter.date(from: value)!
+}
+
+private func appendQoderData(_ data: Data, to file: URL) throws {
+    let handle = try FileHandle(forWritingTo: file)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: data)
+    try handle.close()
 }
