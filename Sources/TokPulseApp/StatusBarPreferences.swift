@@ -1,6 +1,6 @@
 import Combine
 import Foundation
-import TokPulseCore
+import TokPulseProtocol
 
 @MainActor
 final class StatusBarPreferences: ObservableObject {

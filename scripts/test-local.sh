@@ -13,6 +13,7 @@ module_cache="$build_root/ModuleCache"
 
 mkdir -p "$module_root" "$module_cache"
 
+protocol_sources=("$repo_root"/Sources/TokPulseProtocol/*.swift)
 core_sources=("$repo_root"/Sources/TokPulseCore/*.swift)
 test_sources=("$repo_root"/Tests/TokPulseCoreTests/*.swift)
 
@@ -23,6 +24,21 @@ xcrun swiftc \
     -parse-as-library \
     -whole-module-optimization \
     -enable-testing \
+    -emit-module \
+    -emit-module-path "$module_root/TokPulseProtocol.swiftmodule" \
+    -emit-object \
+    -module-name TokPulseProtocol \
+    "${protocol_sources[@]}" \
+    -o "$build_root/TokPulseProtocol.o"
+
+xcrun swiftc \
+    -target "$target_triple" \
+    -sdk "$sdk_path" \
+    -module-cache-path "$module_cache" \
+    -parse-as-library \
+    -whole-module-optimization \
+    -enable-testing \
+    -I "$module_root" \
     -emit-module \
     -emit-module-path "$module_root/TokPulseCore.swiftmodule" \
     -emit-object \
@@ -54,6 +70,7 @@ xcrun swiftc \
     -F "$developer_root/Frameworks" \
     -plugin-path "$(xcode-select -p)/usr/lib/swift/host/plugins/testing" \
     "$repo_root/scripts/DirectTestRunner.swift" \
+    "$build_root/TokPulseProtocol.o" \
     "$build_root/TokPulseCore.o" \
     "$build_root/TokPulseCoreTests.o" \
     -framework Testing \

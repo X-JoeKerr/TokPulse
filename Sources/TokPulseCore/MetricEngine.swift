@@ -1,4 +1,5 @@
 import Foundation
+import TokPulseProtocol
 
 public struct MetricEngine: Sendable {
     public static let defaultWindow: TimeInterval = 60

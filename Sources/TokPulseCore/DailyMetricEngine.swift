@@ -1,12 +1,5 @@
 import Foundation
-
-public struct DailyMetrics: Hashable, Sendable {
-    public let generatedAt: Date
-    public let dayStartedAt: Date
-    public let outputTokens: Double
-    public let activeSeconds: TimeInterval
-    public let tokensPerSecond: Double
-}
+import TokPulseProtocol
 
 public struct DailyMetricEngine: Sendable {
     public let calendar: Calendar

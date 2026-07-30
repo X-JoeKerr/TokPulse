@@ -1,4 +1,5 @@
 import Foundation
+import TokPulseProtocol
 
 /// Reads Codex rollout JSONL without retaining prompts, messages, or tool output.
 ///

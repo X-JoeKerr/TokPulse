@@ -47,6 +47,17 @@ This is a last-observed response rate, not pure decode TPS or the exact number o
 
 Session logs are read locally and never modified. TokPulse parses only the fields needed for metrics and does not retain content; prompt text, reasoning text, tool arguments, and tool output are never stored, displayed, or logged. TokPulse makes no network requests.
 
+## CLI
+
+The app bundle includes the same telemetry CLI that feeds the menu-bar UI. It can emit one complete JSON snapshot or a continuous JSON Lines stream:
+
+```sh
+/Applications/TokPulse.app/Contents/Helpers/tokpulse-cli snapshot --json
+/Applications/TokPulse.app/Contents/Helpers/tokpulse-cli stream --json-lines
+```
+
+Run `/Applications/TokPulse.app/Contents/Helpers/tokpulse-cli --help` for the optional pretty-printing and stream-interval flags. The JSON schema includes the dashboard metrics, daily metrics, answering-Agent count, and diagnostic count.
+
 ## Install
 
 TokPulse targets macOS 13 or newer and has no third-party dependencies.

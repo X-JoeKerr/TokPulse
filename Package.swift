@@ -9,18 +9,27 @@ let package = Package(
     ],
     products: [
         .executable(name: "TokPulse", targets: ["TokPulseApp"]),
+        .executable(name: "tokpulse-cli", targets: ["TokPulseCLI"]),
+        .library(name: "TokPulseProtocol", targets: ["TokPulseProtocol"]),
         .library(name: "TokPulseCore", targets: ["TokPulseCore"]),
     ],
     targets: [
-        .target(name: "TokPulseCore"),
+        .target(name: "TokPulseProtocol"),
+        .target(
+            name: "TokPulseCore",
+            dependencies: ["TokPulseProtocol"]
+        ),
         .executableTarget(
             name: "TokPulseApp",
-            dependencies: ["TokPulseCore"]
+            dependencies: ["TokPulseProtocol"]
+        ),
+        .executableTarget(
+            name: "TokPulseCLI",
+            dependencies: ["TokPulseCore", "TokPulseProtocol"]
         ),
         .testTarget(
             name: "TokPulseCoreTests",
-            dependencies: ["TokPulseCore"]
+            dependencies: ["TokPulseCore", "TokPulseProtocol"]
         ),
     ]
 )
-

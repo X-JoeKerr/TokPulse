@@ -1,19 +1,5 @@
 import Foundation
-
-public enum AgentKind: String, Codable, Sendable {
-    case root
-    case subagent
-}
-
-public enum AgentSource: String, Codable, Sendable {
-    case codex
-    case qoderCLI
-    case qoderQuest
-
-    public var isQoder: Bool {
-        self != .codex
-    }
-}
+import TokPulseProtocol
 
 public enum TokenCountQuality: String, Codable, Sendable {
     case reported
@@ -23,40 +9,6 @@ public enum TokenCountQuality: String, Codable, Sendable {
 public enum TimingQuality: String, Codable, Sendable {
     case observed
     case inferred
-}
-
-public struct AgentDescriptor: Identifiable, Hashable, Sendable {
-    public let id: String
-    public let sessionID: String
-    public let parentAgentID: String?
-    public let kind: AgentKind
-    public let source: AgentSource
-    public let name: String
-    public let model: String?
-    public let workingDirectory: String?
-    public let startedAt: Date
-
-    public init(
-        id: String,
-        sessionID: String,
-        parentAgentID: String? = nil,
-        kind: AgentKind,
-        source: AgentSource = .codex,
-        name: String,
-        model: String? = nil,
-        workingDirectory: String? = nil,
-        startedAt: Date
-    ) {
-        self.id = id
-        self.sessionID = sessionID
-        self.parentAgentID = parentAgentID
-        self.kind = kind
-        self.source = source
-        self.name = name
-        self.model = model
-        self.workingDirectory = workingDirectory
-        self.startedAt = startedAt
-    }
 }
 
 public struct GenerationSample: Identifiable, Hashable, Sendable {
@@ -87,60 +39,5 @@ public struct GenerationSample: Identifiable, Hashable, Sendable {
         self.reasoningTokens = reasoningTokens
         self.tokenQuality = tokenQuality
         self.timingQuality = timingQuality
-    }
-}
-
-public struct AgentMetrics: Identifiable, Hashable, Sendable {
-    public let id: String
-    public let descriptor: AgentDescriptor
-    public let outputTokens: Double
-    public let reasoningTokens: Double
-    public let activeSeconds: TimeInterval
-    public let averageTPS: Double
-    public let sampleCount: Int
-    public let isEstimated: Bool
-
-    public var hasFreshSample: Bool {
-        sampleCount > 0
-    }
-}
-
-public struct SessionMetrics: Identifiable, Hashable, Sendable {
-    public let id: String
-    public let agents: [AgentMetrics]
-    public let averageTPS: Double
-    public let totalTPS: Double
-    public let outputTokens: Double
-    public let activeSeconds: TimeInterval
-    public let isEstimated: Bool
-
-    public var activeAgentCount: Int {
-        agents.lazy.filter(\.hasFreshSample).count
-    }
-}
-
-public struct DashboardMetrics: Hashable, Sendable {
-    public let generatedAt: Date
-    public let windowSeconds: TimeInterval
-    public let sessions: [SessionMetrics]
-    public let averageTPS: Double
-    public let totalTPS: Double
-    public let outputTokens: Double
-    public let activeSeconds: TimeInterval
-    public let activeAgentCount: Int
-    public let isEstimated: Bool
-
-    public static func empty(at date: Date, windowSeconds: TimeInterval) -> Self {
-        Self(
-            generatedAt: date,
-            windowSeconds: windowSeconds,
-            sessions: [],
-            averageTPS: 0,
-            totalTPS: 0,
-            outputTokens: 0,
-            activeSeconds: 0,
-            activeAgentCount: 0,
-            isEstimated: false
-        )
     }
 }

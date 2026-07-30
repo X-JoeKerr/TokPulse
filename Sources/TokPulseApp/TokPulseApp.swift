@@ -1,7 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
-import TokPulseCore
+import TokPulseProtocol
 
 @main
 struct TokPulseApp: App {
@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        monitor.stop()
         if let statusItem {
             NSStatusBar.system.removeStatusItem(statusItem)
         }
@@ -38,7 +39,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         dashboardHostingView?.synchronizeFrameWithContent()
-        monitor.refreshNow()
     }
 
     private func configureStatusItem() {

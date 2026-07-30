@@ -1,4 +1,5 @@
 import Foundation
+import TokPulseProtocol
 
 public enum AgentActivityState: String, Hashable, Sendable {
     case answering

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import TokPulseCore
+import TokPulseProtocol
 
 private let now = Date(timeIntervalSince1970: 10_000)
 

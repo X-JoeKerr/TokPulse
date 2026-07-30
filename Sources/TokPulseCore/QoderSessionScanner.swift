@@ -1,4 +1,5 @@
 import Foundation
+import TokPulseProtocol
 
 /// Reads Qoder CLI and Qoder Quest session JSONL without retaining prompts,
 /// messages, or tool output.

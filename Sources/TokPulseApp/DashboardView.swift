@@ -1,6 +1,6 @@
 import AppKit
 import SwiftUI
-import TokPulseCore
+import TokPulseProtocol
 
 struct DashboardView: View {
     let metrics: DashboardMetrics
