@@ -81,6 +81,20 @@ public final class QoderSessionScanner: @unchecked Sendable {
         return assembleResult(at: now, recencyLimit: fileRecencyLimit)
     }
 
+    /// Checks only files already present in the cache. This recovers appends
+    /// from writers that opened a file before the recursive watcher started,
+    /// without recursively enumerating any configured root.
+    func reconcileCachedFiles(at now: Date = Date()) {
+        lock.lock()
+        defer { lock.unlock() }
+        let files = cache.map {
+            (URL(fileURLWithPath: $0.key), $0.value.format)
+        }
+        for (file, format) in files {
+            refreshFile(file, format: format, at: now)
+        }
+    }
+
     public func snapshot(
         at now: Date = Date(),
         fileRecencyLimit: TimeInterval?

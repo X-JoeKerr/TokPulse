@@ -108,6 +108,41 @@ func scannerReadsOnlyAppendedCodexBytesAndMatchesAColdParse() throws {
 }
 
 @Test
+func telemetryStoreReconcilesAFileOpenedBeforeItsWatcher() throws {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("TokPulsePreopenedWriterTests-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let source = try Data(contentsOf: fixtureURL("parallel-tools.jsonl"))
+    let newlines = source.indices.filter { source[$0] == 0x0A }
+    let split = source.index(after: newlines[11])
+    let file = directory.appendingPathComponent("held-open.jsonl")
+    try Data(source[..<split]).write(to: file)
+
+    let writer = try FileHandle(forWritingTo: file)
+    defer { try? writer.close() }
+    try writer.seekToEnd()
+
+    let store = SessionTelemetryStore(
+        codexRoots: [directory],
+        qoderCLIRoots: [],
+        qoderQuestRoots: []
+    )
+    let now = date("2026-07-20T10:00:12.000Z")
+    let initial = store.refresh(at: now, includeRolling: false)
+    #expect(initial.live.samples.count == 1)
+
+    try writer.write(contentsOf: Data(source[split...]))
+    let refreshed = store.refresh(at: now, includeRolling: false)
+
+    #expect(refreshed.live.samples.count == 2)
+    #expect(store.statistics.codex.bytesRead == Int64(source.count))
+    #expect(store.statistics.codex.inventoryPasses == 1)
+}
+
+@Test
 func scannerResetsCodexParserAfterTruncation() throws {
     let fileManager = FileManager.default
     let directory = fileManager.temporaryDirectory

@@ -13,8 +13,9 @@ public struct SessionTelemetryStatistics: Hashable, Sendable {
 /// Owns discovery and parser state for all supported session providers.
 ///
 /// The first refresh inventories recent files once. Later refreshes drain
-/// recursive file events and read only changed JSONL tails. Live and daily
-/// callers receive different time projections of this one in-memory cache.
+/// recursive file events and reconcile only cached file metadata, reading
+/// changed JSONL tails. Live and daily callers receive different time
+/// projections of this one in-memory cache.
 public final class SessionTelemetryStore: @unchecked Sendable {
     public static let rollingWindow: TimeInterval = 26 * 60 * 60
     public static let liveFileRecencyLimit: TimeInterval = 3 * 60
@@ -64,6 +65,8 @@ public final class SessionTelemetryStore: @unchecked Sendable {
             apply(watcher.drain(), at: now)
         } else {
             apply(watcher.drain(), at: now)
+            codexScanner.reconcileCachedFiles(at: now)
+            qoderScanner.reconcileCachedFiles(at: now)
         }
 
         let live = SessionScanResult.merged(

@@ -69,6 +69,18 @@ public final class CodexSessionScanner: @unchecked Sendable {
         return assembleResult(at: now, recencyLimit: fileRecencyLimit)
     }
 
+    /// Checks only files already present in the cache. This recovers appends
+    /// from writers that opened a file before the recursive watcher started,
+    /// without recursively enumerating any configured root.
+    func reconcileCachedFiles(at now: Date = Date()) {
+        lock.lock()
+        defer { lock.unlock() }
+        let files = cache.keys.map { URL(fileURLWithPath: $0) }
+        for file in files {
+            refreshFile(file, at: now)
+        }
+    }
+
     public func snapshot(
         at now: Date = Date(),
         fileRecencyLimit: TimeInterval?
